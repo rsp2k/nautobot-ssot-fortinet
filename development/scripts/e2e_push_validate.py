@@ -148,7 +148,11 @@ def run() -> None:
     time.sleep(1)  # let the FortiGate commit
     with build_client(ext) as fgt:
         try:
-            found = fgt.cmdb.firewall.address.get(uid=TEST_ORIG_NAME)
+            # fortigate-api Connector.get(**kwargs) — pops kwargs[self.uid].
+            # For address that's 'name', NOT 'uid'. Pre-v2.4 we passed uid=
+            # which silently fetched all addresses and rec[0] picked an
+            # unrelated one — masking failed creates as false positives.
+            found = fgt.cmdb.firewall.address.get(name=TEST_ORIG_NAME)
             if found:
                 rec = found[0] if isinstance(found, list) else found
                 print(f"  ✓ FortiGate now has {TEST_ORIG_NAME!r}: type={rec.get('type')} subnet={rec.get('subnet')}")

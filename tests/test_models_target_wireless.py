@@ -57,6 +57,12 @@ def _make_target_adapter() -> FortiGateWirelessTargetAdapter:
 
     Adapter.__init__(a)
     a.client = MagicMock()
+    # check_fortios_response (v2.4+) expects resp.status_code == 200.
+    # MagicMock return values default to nested MagicMocks (no real attrs),
+    # so we set status_code=200 on the create/update return values.
+    for method in ("create", "update"):
+        for endpoint in ("vap", "wtp_profile"):
+            getattr(getattr(a.client.cmdb.wireless_controller, endpoint), method).return_value.status_code = 200
     a.job = MagicMock()
     a.hostname = "fgt-test"
     a.vdom = "root"
@@ -117,13 +123,16 @@ def test_create_does_partial_update_when_target_sibling_exists():
         attrs=new_attrs,
     )
 
-    # Should have called UPDATE with just the radio-2 subfield
+    # fortigate-api Connector.update(data) — uid (name) lives INSIDE data,
+    # not as a separate kwarg. Bug from v2.0 fixed in v2.3.
     wtp = target.client.cmdb.wireless_controller.wtp_profile
     wtp.update.assert_called_once()
     call_kwargs = wtp.update.call_args.kwargs
-    assert call_kwargs["uid"] == "office-tri"
-    assert "radio-2" in call_kwargs["data"]
-    assert "radio-1" not in call_kwargs["data"]
+    assert "uid" not in call_kwargs
+    data = call_kwargs["data"]
+    assert data["name"] == "office-tri"
+    assert "radio-2" in data
+    assert "radio-1" not in data
     # No full-profile create call
     wtp.create.assert_not_called()
 
@@ -213,6 +222,58 @@ def test_create_aggregates_siblings_from_source():
     assert "2 radios" in payload["comment"]
     # No update call (we POSTed the whole profile)
     wtp.update.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Regression guard: fortigate-api Connector.update() signature
+# ---------------------------------------------------------------------------
+
+
+def test_update_call_matches_fortigate_api_signature():
+    """v2.3 regression guard for the 'uid=' kwarg bug.
+
+    fortigate-api 2.0.8's ``Connector.update(self, data)`` takes ONLY
+    ``data`` — passing ``uid=`` raises ``TypeError`` at runtime. The bug
+    survived three releases because ``MagicMock()`` accepts any kwargs.
+    Using ``spec=`` here pins the mock to the real signature so misuse
+    fails at unit-test time, not on live FortiOS hardware.
+    """
+    from fortigate_api.connector import Connector
+
+    target = _make_target_adapter()
+    source = _make_target_adapter()
+    target.source_adapter = source
+
+    # Replace the loose MagicMock chain with a spec'd one for wtp_profile.
+    target.client.cmdb.wireless_controller.wtp_profile = MagicMock(spec=Connector)
+    target.client.cmdb.wireless_controller.wtp_profile.update.return_value.status_code = 200
+    target.client.cmdb.wireless_controller.wtp_profile.create.return_value.status_code = 200
+
+    # Seed sibling on target so we hit the partial-update branch
+    sibling = FortiGateRadioProfile(
+        name="fgt-test__root__office__radio-1",
+        **_rp_attrs(
+            name="fgt-test__root__office__radio-1",
+            original_profile_name="office",
+            radio_index=1,
+        ),
+    )
+    target.add(sibling)
+
+    # This should NOT raise. Pre-v2.3 it did, because the code passed uid=.
+    FortiGateRadioProfile.create(
+        target,
+        ids={"name": "fgt-test__root__office__radio-2"},
+        attrs=_rp_attrs(
+            name="fgt-test__root__office__radio-2",
+            original_profile_name="office",
+            radio_index=2,
+            frequency="5GHz",
+        ),
+    )
+
+    # And the call was actually made
+    target.client.cmdb.wireless_controller.wtp_profile.update.assert_called_once()
 
 
 def test_create_aggregates_single_radio_when_only_one_sibling():

@@ -44,6 +44,7 @@ from nautobot_ssot_fortinet.diffsync.models.firewall import (
 from nautobot_ssot_fortinet.utils.fortios import (
     NAME_MANGLE_SEP,
     build_fortios_service_payload,
+    check_fortios_response,
 )
 
 # ---- AddressObject --------------------------------------------------------
@@ -81,7 +82,10 @@ class FortiGateAddressObject(AddressObject):
                 )
             return super().create(adapter, ids, attrs)
 
-        adapter.client.cmdb.firewall.address.create(data=payload)
+        check_fortios_response(
+            adapter.client.cmdb.firewall.address.create(data=payload),
+            label=f"address.create {payload['name']!r}",
+        )
         if adapter.job:
             adapter.job.logger.info(
                 f"  + created on FortiGate: {payload['name']!r} ({attrs['address_type']}, {attrs['value']})"
@@ -99,7 +103,10 @@ class FortiGateAddressObject(AddressObject):
         payload = _address_payload(original_name, addr_type, value, description)
         if payload is None:
             return super().update(attrs)
-        self.adapter.client.cmdb.firewall.address.update(uid=original_name, data=payload)
+        check_fortios_response(
+            self.adapter.client.cmdb.firewall.address.update(data=payload),
+            label=f"address.update {original_name!r}",
+        )
         if self.adapter.job:
             self.adapter.job.logger.info(f"  ~ updated on FortiGate: {original_name!r}")
         return super().update(attrs)
@@ -175,7 +182,10 @@ class FortiGateAddressObjectGroup(AddressObjectGroup):
             "member": members,
             "comment": (attrs.get("description", "") or "")[:255],
         }
-        adapter.client.cmdb.firewall.addrgrp.create(data=payload)
+        check_fortios_response(
+            adapter.client.cmdb.firewall.addrgrp.create(data=payload),
+            label=f"addrgrp.create {original!r}",
+        )
         if adapter.job:
             adapter.job.logger.info(f"  + created group on FortiGate: {original!r} ({len(members)} members)")
         return super().create(adapter, ids, attrs)
@@ -190,7 +200,10 @@ class FortiGateAddressObjectGroup(AddressObjectGroup):
             "member": members,
             "comment": (attrs.get("description", self.description) or "")[:255],
         }
-        self.adapter.client.cmdb.firewall.addrgrp.update(uid=original, data=payload)
+        check_fortios_response(
+            self.adapter.client.cmdb.firewall.addrgrp.update(data=payload),
+            label=f"addrgrp.update {original!r}",
+        )
         if self.adapter.job:
             self.adapter.job.logger.info(f"  ~ updated group on FortiGate: {original!r}")
         return super().update(attrs)
@@ -231,7 +244,10 @@ class FortiGateServiceObject(ServiceObject):
                     f"{ids['ip_protocol']!r} has no FortiOS mapping"
                 )
             return super().create(adapter, ids, attrs)
-        adapter.client.cmdb.firewall_service.custom.create(data=payload)
+        check_fortios_response(
+            adapter.client.cmdb.firewall_service.custom.create(data=payload),
+            label=f"service.create {payload['name']!r}",
+        )
         if adapter.job:
             adapter.job.logger.info(
                 f"  + created service on FortiGate: {ids['name']!r} ({ids['ip_protocol']}/{ids['port'] or '-'})"
@@ -247,7 +263,10 @@ class FortiGateServiceObject(ServiceObject):
         )
         if payload is None:
             return super().update(attrs)
-        self.adapter.client.cmdb.firewall_service.custom.update(uid=self.name, data=payload)
+        check_fortios_response(
+            self.adapter.client.cmdb.firewall_service.custom.update(data=payload),
+            label=f"service.update {self.name!r}",
+        )
         if self.adapter.job:
             self.adapter.job.logger.info(f"  ~ updated service on FortiGate: {self.name!r}")
         return super().update(attrs)
@@ -281,7 +300,10 @@ class FortiGateServiceObjectGroup(ServiceObjectGroup):
             "member": members,
             "comment": (attrs.get("description", "") or "")[:255],
         }
-        adapter.client.cmdb.firewall_service.group.create(data=payload)
+        check_fortios_response(
+            adapter.client.cmdb.firewall_service.group.create(data=payload),
+            label=f"service-group.create {original!r}",
+        )
         if adapter.job:
             adapter.job.logger.info(f"  + created service group on FortiGate: {original!r} ({len(members)} members)")
         return super().create(adapter, ids, attrs)
@@ -294,7 +316,10 @@ class FortiGateServiceObjectGroup(ServiceObjectGroup):
             "member": members,
             "comment": (attrs.get("description", self.description) or "")[:255],
         }
-        self.adapter.client.cmdb.firewall_service.group.update(uid=original, data=payload)
+        check_fortios_response(
+            self.adapter.client.cmdb.firewall_service.group.update(data=payload),
+            label=f"service-group.update {original!r}",
+        )
         if self.adapter.job:
             self.adapter.job.logger.info(f"  ~ updated service group on FortiGate: {original!r}")
         return super().update(attrs)
@@ -403,7 +428,10 @@ class FortiGatePolicyRule(PolicyRule):
             "schedule": "always",
             "comments": (attrs.get("description", "") or "")[:255],
         }
-        adapter.client.cmdb.firewall.policy.create(data=payload)
+        check_fortios_response(
+            adapter.client.cmdb.firewall.policy.create(data=payload),
+            label=f"policy.create policyid={policyid}",
+        )
         if adapter.job:
             adapter.job.logger.info(
                 f"  + created policy {policyid} on FortiGate ({srcintf} → {dstintf}, action={payload['action']})"
@@ -448,7 +476,13 @@ class FortiGatePolicyRule(PolicyRule):
         if not payload:
             return super().update(attrs)
 
-        self.adapter.client.cmdb.firewall.policy.update(uid=str(policyid), data=payload)
+        # fortigate-api's Connector.update() pulls the uid (here: policyid)
+        # from inside data — there's no separate uid= kwarg.
+        payload["policyid"] = policyid
+        check_fortios_response(
+            self.adapter.client.cmdb.firewall.policy.update(data=payload),
+            label=f"policy.update policyid={policyid}",
+        )
         if self.adapter.job:
             self.adapter.job.logger.info(f"  ~ updated policy {policyid} on FortiGate: {sorted(payload)}")
         return super().update(attrs)
@@ -588,7 +622,10 @@ class FortiGateNATPolicyRule(NATPolicyRule):
             payload["extport"] = orig_svcs[0][1]
             payload["mappedport"] = xlat_svcs[0][1]
 
-        adapter.client.cmdb.firewall.vip.create(data=payload)
+        check_fortios_response(
+            adapter.client.cmdb.firewall.vip.create(data=payload),
+            label=f"vip.create {payload['name']!r}",
+        )
         if adapter.job:
             adapter.job.logger.info(f"  + created VIP {vip_name!r} on FortiGate ({extip} → {mappedip})")
         return super().create(adapter, ids, attrs)
@@ -627,7 +664,12 @@ class FortiGateNATPolicyRule(NATPolicyRule):
         if not payload:
             return super().update(attrs)
 
-        self.adapter.client.cmdb.firewall.vip.update(uid=vip_name, data=payload)
+        # fortigate-api requires uid (here: name) inside data, not as kwarg.
+        payload["name"] = vip_name
+        check_fortios_response(
+            self.adapter.client.cmdb.firewall.vip.update(data=payload),
+            label=f"vip.update {vip_name!r}",
+        )
         if self.adapter.job:
             self.adapter.job.logger.info(f"  ~ updated VIP {vip_name!r} on FortiGate: {sorted(payload)}")
         return super().update(attrs)

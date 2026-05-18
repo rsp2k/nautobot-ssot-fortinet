@@ -7,11 +7,50 @@ isolation from any Nautobot fixture.
 from __future__ import annotations
 
 import ipaddress
+from typing import Any
 
 # Sentinel separator for name mangling — picked to be (a) grep-friendly,
 # (b) extremely unlikely in real FortiGate object names, (c) URL-safe so
 # Nautobot's slug machinery doesn't choke.
 NAME_MANGLE_SEP = "__"
+
+
+class FortiOSAPIError(RuntimeError):
+    """Raised when a FortiOS REST call returns a non-success HTTP status.
+
+    The exception preserves the parsed FortiOS response body (``status``,
+    ``error``, ``cli_error``, ``http_status``) and the originating label so
+    log messages and stack traces include enough context to diagnose the
+    failed payload — pre-v2.4 silent 500s masked a wtp-profile create bug
+    for 3 releases. Catching this in model code lets us log the FortiOS
+    diagnostic AND skip the DiffSync store update so we don't claim
+    success on a failed write.
+    """
+
+
+def check_fortios_response(resp: Any, label: str) -> Any:
+    """Raise FortiOSAPIError if ``resp.status_code != 200``.
+
+    fortigate-api's Connector returns the raw ``requests.Response`` on
+    create/update calls but doesn't itself check status. FortiOS uses 500
+    + ``{"status":"error","error":-1}`` for many user-fixable mistakes
+    (wrong field shape, validation failures, hardware constraints). We
+    surface those in the exception message so the caller sees what
+    happened on the device.
+
+    Returns ``resp`` unchanged on success so this can be inlined at the
+    call site: ``check_fortios_response(api.create(data=x), label="...")``.
+    """
+    status_code = getattr(resp, "status_code", None)
+    if status_code == 200:
+        return resp
+    body_summary = ""
+    try:
+        body = resp.json()
+        body_summary = f" status={body.get('status')!r} error={body.get('error')!r} cli_error={body.get('cli_error')!r}"
+    except Exception:
+        body_summary = f" body={getattr(resp, 'text', '')[:200]!r}"
+    raise FortiOSAPIError(f"FortiOS rejected {label}: http={status_code}{body_summary}")
 
 
 # IANA protocol number → ``nautobot_firewall_models.choices.IP_PROTOCOL_CHOICES``

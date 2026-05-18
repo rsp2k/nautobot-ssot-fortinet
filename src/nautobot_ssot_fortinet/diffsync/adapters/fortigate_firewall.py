@@ -1,9 +1,10 @@
 """FortiGate-side DiffSync adapter for firewall objects.
 
 Loads addresses, address groups, services, and service groups from a
-FortiGate REST API into the DiffSync store. Read-only — the FortiGate side
-never accepts writes from this integration (v1 is one-way: FortiGate →
-Nautobot).
+FortiGate REST API into the DiffSync store. This adapter is the
+**read-side** (PULL direction); the write-enabled counterpart used by
+the push Job is :class:`FortiGateFirewallTargetAdapter` in
+``fortigate_firewall_target.py``.
 
 Load order MUST be dependency-first: leaf objects before groups that
 reference them, otherwise group member resolution finds nothing.

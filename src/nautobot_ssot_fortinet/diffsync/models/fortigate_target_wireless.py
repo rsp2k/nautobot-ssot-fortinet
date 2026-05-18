@@ -30,7 +30,7 @@ from nautobot_ssot_fortinet.diffsync.models.wireless import (
     RadioProfile,
     WirelessNetwork,
 )
-from nautobot_ssot_fortinet.utils.fortios import NAME_MANGLE_SEP
+from nautobot_ssot_fortinet.utils.fortios import NAME_MANGLE_SEP, check_fortios_response
 
 # ---- WirelessNetwork (VAP) -----------------------------------------------
 
@@ -66,7 +66,10 @@ class FortiGateWirelessNetwork(WirelessNetwork):
                     f"(check authentication={attrs.get('authentication')!r})"
                 )
             return super().create(adapter, ids, attrs)
-        adapter.client.cmdb.wireless_controller.vap.create(data=payload)
+        check_fortios_response(
+            adapter.client.cmdb.wireless_controller.vap.create(data=payload),
+            label=f"vap.create {original_name!r}",
+        )
         if adapter.job:
             adapter.job.logger.info(f"  + created VAP on FortiGate: {original_name!r} (SSID {attrs.get('ssid')!r})")
         return super().create(adapter, ids, attrs)
@@ -80,7 +83,10 @@ class FortiGateWirelessNetwork(WirelessNetwork):
         payload = _vap_payload(original_name, merged)
         if payload is None:
             return super().update(attrs)
-        self.adapter.client.cmdb.wireless_controller.vap.update(uid=original_name, data=payload)
+        check_fortios_response(
+            self.adapter.client.cmdb.wireless_controller.vap.update(data=payload),
+            label=f"vap.update {original_name!r}",
+        )
         if self.adapter.job:
             self.adapter.job.logger.info(f"  ~ updated VAP on FortiGate: {original_name!r}")
         return super().update(attrs)
@@ -163,8 +169,13 @@ class FortiGateRadioProfile(RadioProfile):
             # Parent exists — partial radio-N update.
             radio_n = attrs.get("radio_index")
             radio_payload = _radio_payload(attrs)
-            partial_update = {f"radio-{radio_n}": radio_payload}
-            adapter.client.cmdb.wireless_controller.wtp_profile.update(uid=profile_name, data=partial_update)
+            # fortigate-api Connector.update() reads the uid (here: name)
+            # from inside data, not as a kwarg.
+            partial_update = {"name": profile_name, f"radio-{radio_n}": radio_payload}
+            check_fortios_response(
+                adapter.client.cmdb.wireless_controller.wtp_profile.update(data=partial_update),
+                label=f"wtp_profile.update {profile_name!r} radio-{radio_n}",
+            )
             if adapter.job:
                 adapter.job.logger.info(f"  ~ added radio-{radio_n} to existing wtp-profile {profile_name!r}")
             return super().create(adapter, ids, attrs)
@@ -193,7 +204,10 @@ class FortiGateRadioProfile(RadioProfile):
             # platform-mode isn't a RadioProfile attr since it lives on
             # the container, not individual radios.
             "platform-mode": "FortiAP-tunnel-mode",
-            "comment": f"Created from Nautobot via nautobot-ssot-fortinet sync ({len(sibling_source_rps)} radios)",
+            # FortiOS rejects parentheses in comments as XSS vulnerability
+            # characters (error -173). Using brackets keeps it readable while
+            # passing the check.
+            "comment": f"Created from Nautobot via nautobot-ssot-fortinet sync [{len(sibling_source_rps)} radios]",
         }
         for sib in sibling_source_rps:
             payload[f"radio-{sib.radio_index}"] = _radio_payload(
@@ -206,7 +220,10 @@ class FortiGateRadioProfile(RadioProfile):
                 }
             )
 
-        adapter.client.cmdb.wireless_controller.wtp_profile.create(data=payload)
+        check_fortios_response(
+            adapter.client.cmdb.wireless_controller.wtp_profile.create(data=payload),
+            label=f"wtp_profile.create {profile_name!r}",
+        )
         if adapter.job:
             adapter.job.logger.info(
                 f"  + created wtp-profile {profile_name!r} on FortiGate ({len(sibling_source_rps)} radios)"
@@ -219,8 +236,13 @@ class FortiGateRadioProfile(RadioProfile):
         profile_name = merged.get("original_profile_name") or self.original_profile_name
         radio_n = merged.get("radio_index") or self.radio_index
         radio_payload = _radio_payload(merged)
-        partial_update = {f"radio-{radio_n}": radio_payload}
-        self.adapter.client.cmdb.wireless_controller.wtp_profile.update(uid=profile_name, data=partial_update)
+        # fortigate-api Connector.update() reads the uid (here: name) from
+        # inside data, not as a kwarg.
+        partial_update = {"name": profile_name, f"radio-{radio_n}": radio_payload}
+        check_fortios_response(
+            self.adapter.client.cmdb.wireless_controller.wtp_profile.update(data=partial_update),
+            label=f"wtp_profile.update {profile_name!r} radio-{radio_n}",
+        )
         if self.adapter.job:
             self.adapter.job.logger.info(f"  ~ updated wtp-profile {profile_name!r} radio-{radio_n} on FortiGate")
         return super().update(attrs)
@@ -259,7 +281,11 @@ def _radio_payload(attrs: dict[str, Any]) -> dict:
         payload["auto-power-high"] = attrs["tx_power_max"]
     channels = attrs.get("allowed_channel_list")
     if channels is not None:
-        payload["channel"] = [str(c) for c in channels]
+        # FortiOS wtp-profile.radio-N.channel expects a list of {"chan": str}
+        # objects, NOT a flat list of strings/ints. Probed empirically against
+        # FortiOS v7.0.14 — flat lists return HTTP 500 with error=-1 silently
+        # (status_code wasn't checked pre-v2.4 so this masked for 3 releases).
+        payload["channel"] = [{"chan": str(c)} for c in channels]
     if attrs.get("regulatory_domain"):
         payload["country"] = attrs["regulatory_domain"]
     return payload

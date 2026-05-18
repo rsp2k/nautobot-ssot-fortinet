@@ -464,3 +464,71 @@ class TestParseIntfAnnotation:
         desc = "Allow web [srcintf=internal,vlan100 dstintf=wan1,wan2]"
         assert parse_intf_annotation(desc, "srcintf") == ["internal", "vlan100"]
         assert parse_intf_annotation(desc, "dstintf") == ["wan1", "wan2"]
+
+
+# ---------------------------------------------------------------------------
+# check_fortios_response — added in v2.4 after silent-500 bug
+# ---------------------------------------------------------------------------
+
+
+class TestCheckFortiOSResponse:
+    """Guard against the v1.0-v2.3 silent-500 pattern.
+
+    Pre-v2.4 the model code did ``adapter.client.cmdb.xxx.create(data=...)``
+    and discarded the Response. FortiOS uses 500 + ``status: error,
+    error: -1`` for validation rejections — silently lost.
+    """
+
+    def _resp(self, status_code: int, body: dict | None = None, text: str = "") -> object:
+        class _R:
+            def __init__(s):
+                s.status_code = status_code
+                s.text = text
+
+            def json(s):
+                if body is None:
+                    raise ValueError("no json")
+                return body
+
+        return _R()
+
+    def test_passes_through_on_200(self):
+        from nautobot_ssot_fortinet.utils.fortios import check_fortios_response
+
+        resp = self._resp(200, {"status": "success"})
+        assert check_fortios_response(resp, label="x") is resp
+
+    def test_raises_on_500_with_body_summary(self):
+        from nautobot_ssot_fortinet.utils.fortios import FortiOSAPIError, check_fortios_response
+
+        resp = self._resp(500, {"status": "error", "error": -1, "cli_error": "bad shape"})
+        with pytest.raises(FortiOSAPIError) as exc:
+            check_fortios_response(resp, label="wtp_profile.create 'guest'")
+        msg = str(exc.value)
+        assert "wtp_profile.create 'guest'" in msg
+        assert "500" in msg
+        assert "-1" in msg
+        assert "bad shape" in msg
+
+    def test_raises_on_non_json_body(self):
+        from nautobot_ssot_fortinet.utils.fortios import FortiOSAPIError, check_fortios_response
+
+        resp = self._resp(503, body=None, text="<html>503 Service Unavailable</html>")
+        with pytest.raises(FortiOSAPIError) as exc:
+            check_fortios_response(resp, label="address.update 'x'")
+        msg = str(exc.value)
+        assert "address.update 'x'" in msg
+        assert "503" in msg
+        assert "Service Unavailable" in msg
+
+    def test_raises_on_object_without_status_code(self):
+        from nautobot_ssot_fortinet.utils.fortios import FortiOSAPIError, check_fortios_response
+
+        class Weird:
+            text = ""
+
+            def json(self):
+                return {}
+
+        with pytest.raises(FortiOSAPIError):
+            check_fortios_response(Weird(), label="x")

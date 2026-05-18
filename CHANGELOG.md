@@ -3,7 +3,111 @@
 This project uses [CalVer](https://calver.org/) — versions are `YYYY.MM.DD`
 representing the date of release. Same-day fixes use `YYYY.MM.DD.N`.
 
+## 2026.05.18.4 — Push direction hotfix: actually-works edition (v2.3)
+
+Hotfix for v2.2 (2026.05.18.3) and **multiple latent bugs from v2.0+**
+that were masked by mock-based unit tests and a buggy verification
+pattern. Live validation against a real FortiWiFi-61E surfaced all of
+them. **If you ran any push Job in v2.0–v2.2 and saw "Created/Updated
+successfully" logs, your sync most likely did nothing on the FortiGate**
+— this release fixes that.
+
+### Critical fixes
+
+- **`Connector.update(uid=..., data=...)` was broken across 10 callsites
+  since v2.0.** fortigate-api's `Connector.update(self, data)` takes
+  only `data` — the uid lives inside the data dict (`data["name"]` or
+  `data["policyid"]`). Pre-v2.3 every push *update* path raised
+  `TypeError: Connector.update() got an unexpected keyword argument 'uid'`
+  on the live device. Mock-based unit tests didn't catch it because
+  `MagicMock()` accepts any kwargs silently. Fixed across:
+  `firewall.address`, `firewall.addrgrp`, `firewall_service.custom`,
+  `firewall_service.group`, `firewall.policy`, `firewall.vip`,
+  `wireless_controller.vap`, `wireless_controller.wtp_profile` (×2 sites).
+- **`_radio_payload()` built the wrong channel format.** Sent
+  `channel: ["1", "6", "11"]` (flat list of strings); FortiOS requires
+  `channel: [{"chan": "1"}, {"chan": "6"}, {"chan": "11"}]` (list of
+  objects). Empirically probed against FortiOS v7.0.14. Flat lists
+  returned http=500 / error=-1 silently.
+- **`wtp-profile.create` comment with parentheses rejected as XSS** by
+  FortiOS (error -173: "The string contains XSS vulnerability characters").
+  Switched default comment to use `[N radios]` brackets instead of
+  `(N radios)` parens.
+- **No HTTP status checking on create/update responses.** All FortiOS
+  rejections (HTTP 500 + error code) were silently dropped. Added
+  `check_fortios_response()` helper that raises `FortiOSAPIError` with
+  the FortiOS error code, `cli_error` text, and a label identifying
+  which call failed. **All 17 create/update callsites now check status.**
+
+### Verification-script bug class (development/, not shipped)
+
+- `Connector.get(uid=...)` doesn't filter by uid — it fetches everything
+  and returns the full list. The correct call is `.get(name='x')` (or
+  whatever the endpoint's `uid` class attribute is). Pre-v2.3 our
+  verification scripts did `found = api.get(uid=NAME); rec = found[0]`
+  — silently picking an unrelated record as the "verified" object.
+  **This is how every "live validated against FWF-61E" claim across
+  v1.0–v2.2 became a false positive for anything beyond pull/load shape.**
+  Fixed in `development/scripts/e2e_push_validate.py` and
+  `e2e_push_wtp_profile.py`.
+
+### v2.2 wtp-profile create — NOW actually works
+
+The v2.2 sibling-aggregation create path was non-functional in
+2026.05.18.3 (silent HTTP 500 due to channel-format + comment-XSS
+issues). After the v2.3 fixes, a focused live test against FWF-61E
+confirms end-to-end:
+
+```
+Nautobot RadioProfile(profile=guest, radio_index=1, 2.4GHz, channels=[1,6,11])
+Nautobot RadioProfile(profile=guest, radio_index=2, 5GHz,   channels=[36,40,44,48])
+       ↓ Nautobot → FortiGate (wireless) Job
+FortiGate wtp-profile 'guest':
+  radio-1 band='802.11n,g-only'  channels populated
+  radio-2 band='802.11ac'        channels populated
+       ↓ Hardware-appropriate band normalization by FortiOS:
+       (FWF-61E is 802.11ac, so 802.11ax-5G normalized to 802.11ac)
+```
+
+### Tests
+
+- **193 unit tests** (was 188 in v2.2). +4 for `check_fortios_response`
+  behavior, +1 regression guard for `Connector.update()` signature
+  using `MagicMock(spec=Connector)` — the spec'd mock fails at unit-test
+  time if anyone reintroduces `uid=` kwarg.
+- 1 corrected test (`test_create_does_partial_update_when_target_sibling_exists`)
+  now asserts `data["name"]` instead of `uid=`.
+- All ruff lint + format clean.
+
+### Recommendation if upgrading from v1.0–v2.2
+
+If your push Jobs ever showed "Updated successfully" but you observed
+state on the FortiGate that didn't reflect your Nautobot changes,
+the cause was the `uid=` bug. After upgrading to v2.3:
+
+1. Run the relevant pull Job to refresh Nautobot's view of the FortiGate
+2. Compare with what you expected — anything you thought you had pushed
+   but didn't is now a real diff
+3. Re-run the push Job; the writes will now actually land
+
+### Upgrade from v2026.05.18.3
+
+```bash
+pip install --upgrade nautobot-ssot-fortinet
+nautobot-server collectstatic --no-input
+sudo systemctl restart nautobot nautobot-worker
+```
+
+No Job count change (still 5). No DiffSync attr changes.
+
 ## 2026.05.18.3 — wtp-profile CREATE via sibling aggregation (v2.2)
+
+> **NOTE (added 2026-05-18, post-release):** the wtp-profile create code
+> path shipped in this release was **non-functional** against real
+> FortiOS due to bugs documented in v2.3 (2026.05.18.4). The code path
+> exists and unit tests pass, but live POSTs returned HTTP 500 silently.
+> Upgrade to v2.3+ for actually-working wtp-profile create.
+
 
 Fourth release today. Closes the last remaining CREATE gap from v2.1:
 **RadioProfile push can now create the parent wtp-profile from scratch**
