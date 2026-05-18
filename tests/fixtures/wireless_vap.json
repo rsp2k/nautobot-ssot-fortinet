@@ -1,0 +1,47 @@
+[
+  {
+    "name": "corp-wifi",
+    "ssid": "CorpNet",
+    "security": "wpa2-only-personal",
+    "broadcast-ssid": "enable",
+    "status": "enable",
+    "vlanid": 100,
+    "comment": "Primary corporate SSID"
+  },
+  {
+    "name": "guest-wifi",
+    "ssid": "Guest",
+    "security": "open",
+    "broadcast-ssid": "enable",
+    "status": "enable",
+    "vlanid": 200,
+    "comment": "Captive-portal guest"
+  },
+  {
+    "name": "iot-net",
+    "ssid": "IoT-Devices",
+    "security": "wpa3-sae",
+    "broadcast-ssid": "disable",
+    "status": "enable",
+    "vlanid": 300,
+    "comment": "Hidden SSID for IoT"
+  },
+  {
+    "name": "legacy-wep",
+    "ssid": "OldStuff",
+    "security": "wep128",
+    "broadcast-ssid": "enable",
+    "status": "disable",
+    "vlanid": 0,
+    "comment": "Disabled — exercises wep→Open lossy mapping + status=disable"
+  },
+  {
+    "name": "exotic-thing",
+    "ssid": "Weird",
+    "security": "totally-bogus-mode",
+    "broadcast-ssid": "enable",
+    "status": "enable",
+    "vlanid": 0,
+    "comment": "Exercises unknown-security fallback to Open"
+  }
+]

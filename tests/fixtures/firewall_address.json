@@ -1,0 +1,45 @@
+[
+  {
+    "name": "all",
+    "type": "ipmask",
+    "subnet": "0.0.0.0 0.0.0.0",
+    "comment": ""
+  },
+  {
+    "name": "WEB_SERVERS",
+    "type": "ipmask",
+    "subnet": "10.0.10.0 255.255.255.0",
+    "comment": "Public web tier"
+  },
+  {
+    "name": "DB_HOST_1",
+    "type": "ipmask",
+    "subnet": "10.0.20.5 255.255.255.255",
+    "comment": ""
+  },
+  {
+    "name": "VPN_POOL",
+    "type": "iprange",
+    "start-ip": "10.99.0.10",
+    "end-ip": "10.99.0.250",
+    "comment": "Remote VPN clients"
+  },
+  {
+    "name": "salesforce.com",
+    "type": "fqdn",
+    "fqdn": "salesforce.com",
+    "comment": "Vendor FQDN"
+  },
+  {
+    "name": "GEO_RU",
+    "type": "geography",
+    "country": "RU",
+    "comment": "Should be skipped — geography type not modeled"
+  },
+  {
+    "name": "WILD_LAB",
+    "type": "wildcard",
+    "wildcard": "10.0.0.0 255.255.0.255",
+    "comment": "Should be skipped — wildcard type not modeled"
+  }
+]

@@ -1,0 +1,23 @@
+[
+  {
+    "wtp-id": "FP231F-1",
+    "name": "ap-warehouse-1",
+    "serial": "FP231FTF21000001",
+    "wtp-profile": "branch-default",
+    "location": "Warehouse"
+  },
+  {
+    "wtp-id": "FP231F-2",
+    "name": "ap-warehouse-2",
+    "serial": "FP231FTF21000002",
+    "wtp-profile": "branch-default",
+    "location": "Warehouse"
+  },
+  {
+    "wtp-id": "FP433-Lab",
+    "name": "ap-lab-1",
+    "serial": "FP433GTF22000099",
+    "wtp-profile": "lab-local",
+    "location": "Lab"
+  }
+]

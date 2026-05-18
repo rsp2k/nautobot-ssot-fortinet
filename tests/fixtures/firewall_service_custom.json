@@ -1,0 +1,43 @@
+[
+  {
+    "name": "HTTP",
+    "protocol": "TCP/UDP/SCTP",
+    "tcp-portrange": "80",
+    "udp-portrange": "",
+    "sctp-portrange": "",
+    "category": "Web Access",
+    "comment": ""
+  },
+  {
+    "name": "HTTPS",
+    "protocol": "TCP/UDP/SCTP",
+    "tcp-portrange": "443",
+    "udp-portrange": "",
+    "comment": ""
+  },
+  {
+    "name": "DNS",
+    "protocol": "TCP/UDP/SCTP",
+    "tcp-portrange": "53",
+    "udp-portrange": "53",
+    "comment": "Picks TCP first when both sides populated"
+  },
+  {
+    "name": "PING",
+    "protocol": "ICMP",
+    "icmptype": 8,
+    "comment": "Echo Request"
+  },
+  {
+    "name": "OSPF",
+    "protocol": "IP",
+    "protocol-number": 89,
+    "comment": ""
+  },
+  {
+    "name": "WEB_RANGE",
+    "protocol": "TCP/UDP/SCTP",
+    "tcp-portrange": "8000-8099",
+    "comment": "Port range"
+  }
+]

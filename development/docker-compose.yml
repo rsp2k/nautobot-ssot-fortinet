@@ -1,0 +1,115 @@
+# Dev stack for nautobot-ssot-fortinet.
+#
+# 4 containers: postgres + redis + nautobot-web + nautobot-worker.
+# Reverse-proxied via caddy-docker-proxy on the external `caddy` network.
+# Plugin source bind-mounted from ../src for hot-reload (restart web to apply).
+
+x-nautobot-common: &nautobot-common
+  build:
+    context: ..
+    dockerfile: development/Dockerfile
+  image: nautobot-ssot-fortinet-dev:latest
+  restart: unless-stopped
+  environment:
+    NAUTOBOT_ALLOWED_HOSTS: "${DOMAIN} nautobot-web localhost 127.0.0.1"
+    # Service-prefixed hostnames avoid DNS collisions on the shared `caddy`
+    # network with other stacks that also expose generic `postgres`/`redis`
+    # aliases (Docker's embedded DNS returns the first match across all
+    # networks the container is attached to, not scoped to one network).
+    NAUTOBOT_DB_HOST: ssot-fortinet-db
+    NAUTOBOT_DB_PORT: "5432"
+    NAUTOBOT_DB_NAME: ${NAUTOBOT_DB_NAME}
+    NAUTOBOT_DB_USER: ${NAUTOBOT_DB_USER}
+    NAUTOBOT_DB_PASSWORD: ${NAUTOBOT_DB_PASSWORD}
+    NAUTOBOT_REDIS_HOST: ssot-fortinet-cache
+    NAUTOBOT_REDIS_PORT: "6379"
+    NAUTOBOT_REDIS_PASSWORD: ${NAUTOBOT_REDIS_PASSWORD}
+    NAUTOBOT_SECRET_KEY: ${NAUTOBOT_SECRET_KEY}
+    NAUTOBOT_SUPERUSER_NAME: ${NAUTOBOT_SUPERUSER_NAME}
+    NAUTOBOT_SUPERUSER_EMAIL: ${NAUTOBOT_SUPERUSER_EMAIL}
+    NAUTOBOT_SUPERUSER_PASSWORD: ${NAUTOBOT_SUPERUSER_PASSWORD}
+    NAUTOBOT_SUPERUSER_API_TOKEN: ${NAUTOBOT_SUPERUSER_API_TOKEN}
+    NAUTOBOT_CREATE_SUPERUSER: "true"
+    FGT_DEV_URL: ${FGT_DEV_URL:-}
+    FGT_DEV_TOKEN: ${FGT_DEV_TOKEN:-}
+    FGT_DEV_USERNAME: ${FGT_DEV_USERNAME:-}
+    FGT_DEV_PASSWORD: ${FGT_DEV_PASSWORD:-}
+    FGT_DEV_VERIFY_SSL: ${FGT_DEV_VERIFY_SSL:-true}
+    PYTHONUNBUFFERED: "1"
+  volumes:
+    - ./nautobot_config/nautobot_config.py:/opt/nautobot/nautobot_config.py:ro
+    - ../src:/opt/plugin/src
+    - ../tests:/opt/plugin/tests
+    - ../pyproject.toml:/opt/plugin/pyproject.toml:ro
+    - ./scripts:/opt/nautobot/jobs/dev_scripts:ro
+    # No named volumes for media/static/git in dev — they regenerate at
+    # startup. Persisting them would require an init container to chown,
+    # which is dead weight for a non-prod stack. The DB volume below is
+    # the only durable state.
+  depends_on:
+    ssot-fortinet-db:
+      condition: service_healthy
+    ssot-fortinet-cache:
+      condition: service_healthy
+
+services:
+  ssot-fortinet-db:
+    image: postgres:16-alpine
+    container_name: ${COMPOSE_PROJECT_NAME}-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${NAUTOBOT_DB_NAME}
+      POSTGRES_USER: ${NAUTOBOT_DB_USER}
+      POSTGRES_PASSWORD: ${NAUTOBOT_DB_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+
+  ssot-fortinet-cache:
+    image: redis:7-alpine
+    container_name: ${COMPOSE_PROJECT_NAME}-redis
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${NAUTOBOT_REDIS_PASSWORD}"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${NAUTOBOT_REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+
+  nautobot-web:
+    <<: *nautobot-common
+    container_name: ${COMPOSE_PROJECT_NAME}-web
+    networks:
+      - internal
+      - caddy
+    labels:
+      caddy: ${DOMAIN}
+      caddy.reverse_proxy: "{{upstreams 8080}}"
+      caddy.encode: "gzip zstd"
+
+  nautobot-worker:
+    <<: *nautobot-common
+    container_name: ${COMPOSE_PROJECT_NAME}-worker
+    entrypoint: ["nautobot-server", "celery", "worker", "-l", "INFO"]
+    networks:
+      - internal
+
+volumes:
+  postgres-data:
+  redis-data:
+
+networks:
+  internal:
+    driver: bridge
+  caddy:
+    external: true

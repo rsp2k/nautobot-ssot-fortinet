@@ -1,0 +1,52 @@
+[
+  {
+    "name": "branch-default",
+    "platform-mode": "FortiAP-tunnel-mode",
+    "radio-1": {
+      "band": "802.11n,g-only",
+      "channel": ["1", "6", "11"],
+      "auto-power-low": 5,
+      "auto-power-high": 17,
+      "country": "US",
+      "vaps": [{"name": "corp-wifi"}, {"name": "guest-wifi"}]
+    },
+    "radio-2": {
+      "band": "802.11ax-5G",
+      "channel": ["36", "40", "44", "48", "149", "153", "157", "161"],
+      "auto-power-low": 8,
+      "auto-power-high": 20,
+      "country": "US",
+      "vaps": [{"name": "corp-wifi"}, {"name": "iot-net"}]
+    }
+  },
+  {
+    "name": "lab-local",
+    "platform-mode": "FortiAP-local-mode",
+    "radio-1": {
+      "band": "802.11g",
+      "channel": ["6"],
+      "auto-power-low": 3,
+      "auto-power-high": 15,
+      "country": "US",
+      "vaps": [{"name": "iot-net"}]
+    },
+    "radio-2": {
+      "band": "802.11ax-6G",
+      "channel": ["1", "5", "9"],
+      "auto-power-low": 10,
+      "auto-power-high": 23,
+      "country": "US",
+      "vaps": []
+    }
+  },
+  {
+    "name": "no-radio-3-here",
+    "platform-mode": "FortiAP-tunnel-mode",
+    "radio-1": {
+      "band": "disabled",
+      "channel": [],
+      "country": "US",
+      "vaps": []
+    }
+  }
+]

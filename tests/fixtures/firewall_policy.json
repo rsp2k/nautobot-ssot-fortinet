@@ -1,0 +1,68 @@
+[
+  {
+    "policyid": 1,
+    "name": "Allow_Internal_Web",
+    "status": "enable",
+    "srcintf": [{"name": "internal"}],
+    "dstintf": [{"name": "wan1"}],
+    "srcaddr": [{"name": "INTERNAL_NETS"}],
+    "dstaddr": [{"name": "all"}],
+    "service": [{"name": "HTTP"}, {"name": "HTTPS"}],
+    "action": "accept",
+    "logtraffic": "all",
+    "schedule": "always",
+    "comments": "Internal users to web"
+  },
+  {
+    "policyid": 2,
+    "name": "Deny_FQDN",
+    "status": "enable",
+    "srcintf": [{"name": "internal"}],
+    "dstintf": [{"name": "wan1"}],
+    "srcaddr": [{"name": "WEB_SERVERS"}],
+    "dstaddr": [{"name": "salesforce.com"}],
+    "service": [{"name": "WEB_SVCS"}],
+    "action": "deny",
+    "logtraffic": "all",
+    "comments": ""
+  },
+  {
+    "policyid": 3,
+    "name": "Multi_Member_Group",
+    "status": "enable",
+    "srcintf": [{"name": "internal"}],
+    "dstintf": [{"name": "dmz"}],
+    "srcaddr": [{"name": "INTERNAL_NETS"}, {"name": "SAAS_VENDORS"}],
+    "dstaddr": [{"name": "DB_HOST_1"}, {"name": "VPN_POOL"}],
+    "service": [{"name": "PING"}, {"name": "DNS"}, {"name": "WEB_SVCS"}],
+    "action": "accept",
+    "logtraffic": "disable",
+    "comments": "Exercises srcaddr + dstaddr containing a mix of leaves and groups"
+  },
+  {
+    "policyid": 4,
+    "name": "VPN_Rule",
+    "status": "enable",
+    "srcintf": [{"name": "wan1"}],
+    "dstintf": [{"name": "internal"}],
+    "srcaddr": [{"name": "VPN_POOL"}],
+    "dstaddr": [{"name": "INTERNAL_NETS"}],
+    "service": [{"name": "HTTPS"}],
+    "action": "ipsec",
+    "logtraffic": "utm",
+    "comments": "IPsec — action lossy-maps to allow with annotation"
+  },
+  {
+    "policyid": 5,
+    "name": "Phantom_Service",
+    "status": "enable",
+    "srcintf": [{"name": "internal"}],
+    "dstintf": [{"name": "wan1"}],
+    "srcaddr": [{"name": "WEB_SERVERS"}],
+    "dstaddr": [{"name": "all"}],
+    "service": [{"name": "HTTPS"}, {"name": "NONEXISTENT_SVC"}],
+    "action": "accept",
+    "logtraffic": "disable",
+    "comments": "Unknown service should be silently dropped, not crash"
+  }
+]

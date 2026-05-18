@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Tooling caches
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.tox/
+
+# uv
+uv.lock
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Local secrets
+.env
+.env.local
+*.local
+*.pem
+
+# Nautobot dev
+/local/
+nautobot.db
+media/
+
+# Built mkdocs site (per Nautobot convention; rebuilt by CI/release process)
+src/nautobot_ssot_fortinet/static/nautobot_ssot_fortinet/docs/

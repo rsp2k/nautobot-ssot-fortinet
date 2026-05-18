@@ -1,0 +1,49 @@
+[
+  {
+    "name": "WEB_DNAT",
+    "extip": "203.0.113.5",
+    "extintf": "wan1",
+    "mappedip": [{"range": "10.0.10.5"}],
+    "portforward": "disable",
+    "protocol": "tcp",
+    "comment": "Simple DNAT — entire dst port range translated"
+  },
+  {
+    "name": "WEB_PORTFWD",
+    "extip": "203.0.113.6",
+    "extintf": "wan1",
+    "mappedip": [{"range": "10.0.10.5"}],
+    "portforward": "enable",
+    "protocol": "tcp",
+    "extport": "8080",
+    "mappedport": "80",
+    "comment": "Port-forward 8080 -> 80"
+  },
+  {
+    "name": "SSH_BASTION",
+    "extip": "203.0.113.7",
+    "extintf": "wan1",
+    "mappedip": [{"range": "10.0.20.10"}],
+    "portforward": "enable",
+    "protocol": "tcp",
+    "extport": "2222",
+    "mappedport": "22",
+    "comment": "Bastion SSH portfwd 2222 -> 22"
+  },
+  {
+    "name": "RANGE_NAT",
+    "extip": "203.0.113.8",
+    "extintf": "wan1",
+    "mappedip": [{"range": "10.0.30.10-10.0.30.20"}],
+    "portforward": "disable",
+    "protocol": "tcp",
+    "comment": "DNAT to an internal range — exercises iprange address type"
+  },
+  {
+    "name": "MISSING_EXTIP",
+    "extintf": "wan1",
+    "mappedip": [{"range": "10.0.10.99"}],
+    "portforward": "disable",
+    "comment": "No extip → adapter should skip with warning"
+  }
+]

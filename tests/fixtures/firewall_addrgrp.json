@@ -1,0 +1,17 @@
+[
+  {
+    "name": "INTERNAL_NETS",
+    "member": [
+      {"name": "WEB_SERVERS"},
+      {"name": "DB_HOST_1"}
+    ],
+    "comment": "Trusted internal"
+  },
+  {
+    "name": "SAAS_VENDORS",
+    "member": [
+      {"name": "salesforce.com"}
+    ],
+    "comment": ""
+  }
+]
