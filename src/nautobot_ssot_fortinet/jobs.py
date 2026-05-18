@@ -81,6 +81,22 @@ class FortiGateFirewallDataSource(DataSource):
         data_source = "FortiGate"
         description = "Pull FortiGate firewall objects (addresses, services, groups) into nautobot-firewall-models."
 
+    def run(self, *args, **kwargs):  # type: ignore[override]
+        """Capture our custom form kwargs as instance attrs, then run base sync.
+
+        ``nautobot_ssot.contrib.DataSource.run()`` only captures the base
+        SSoT form vars (``dryrun``, ``memory_profiling``,
+        ``parallel_loading``). Our custom ObjectVar / StringVar / BooleanVar
+        fields don't auto-populate as instance attrs — without this
+        override, ``self.external_integration`` etc. resolve to the
+        class-level descriptor objects and crash on attribute access.
+        Fixed in v2.9 after the issue surfaced on the first real UI Job run.
+        """
+        self.external_integration = kwargs["external_integration"]
+        self.vdom = kwargs["vdom"]
+        self.delete_records_missing_from_source = kwargs["delete_records_missing_from_source"]
+        super().run(*args, **kwargs)
+
     def load_source_adapter(self) -> None:
         """Build the FortiGate client + adapter, load all four object kinds."""
         self.logger.info(f"Connecting to FortiGate via ExternalIntegration {self.external_integration.name!r}...")
@@ -192,6 +208,20 @@ class FortiGateWirelessDataSource(DataSource):
             "Pull FortiGate wireless objects (SSIDs, radio profiles, optionally "
             "managed FortiAPs) into Nautobot core wireless models."
         )
+
+    def run(self, *args, **kwargs):  # type: ignore[override]
+        """Capture form kwargs as instance attrs, then run base sync.
+
+        See FortiGateFirewallDataSource.run() for the rationale — same
+        v2.9 fix applied here, plus the three optional AP ObjectVars.
+        """
+        self.external_integration = kwargs["external_integration"]
+        self.vdom = kwargs["vdom"]
+        self.delete_records_missing_from_source = kwargs["delete_records_missing_from_source"]
+        self.ap_device_type = kwargs.get("ap_device_type")
+        self.ap_role = kwargs.get("ap_role")
+        self.ap_location = kwargs.get("ap_location")
+        super().run(*args, **kwargs)
 
     @property
     def sync_access_points(self) -> bool:
@@ -435,7 +465,19 @@ class FortiGateFirewallDataTarget(DataTarget):
         name = "Nautobot -> FortiGate (firewall)"
         data_source = "Nautobot"
         data_target = "FortiGate"
-        description = "Push Nautobot AddressObjects (ipmask type) to a FortiGate."
+        description = (
+            "Push Nautobot firewall objects (AddressObject, AddressObjectGroup, "
+            "ServiceObject, ServiceObjectGroup, PolicyRule, NATPolicyRule) to a "
+            "FortiGate via REST. Full CRUD across every model — see release "
+            "notes for v2.5–v2.7 for the live-validated capability matrix."
+        )
+
+    def run(self, *args, **kwargs):  # type: ignore[override]
+        """Capture form kwargs as instance attrs, then run base sync (v2.9 fix)."""
+        self.external_integration = kwargs["external_integration"]
+        self.vdom = kwargs["vdom"]
+        self.delete_records_missing_from_source = kwargs["delete_records_missing_from_source"]
+        super().run(*args, **kwargs)
 
     def load_source_adapter(self) -> None:
         """Load the Nautobot-side adapter (read-only) scoped to this FortiGate's prefix."""
@@ -527,6 +569,13 @@ class FortiGateWirelessDataTarget(DataTarget):
         data_source = "Nautobot"
         data_target = "FortiGate"
         description = "Push Nautobot WirelessNetworks (VAPs) + RadioProfile updates to a FortiGate."
+
+    def run(self, *args, **kwargs):  # type: ignore[override]
+        """Capture form kwargs as instance attrs, then run base sync (v2.9 fix)."""
+        self.external_integration = kwargs["external_integration"]
+        self.vdom = kwargs["vdom"]
+        self.delete_records_missing_from_source = kwargs["delete_records_missing_from_source"]
+        super().run(*args, **kwargs)
 
     def load_source_adapter(self) -> None:
         """Load Nautobot wireless state (read-only) scoped to this FortiGate's prefix."""

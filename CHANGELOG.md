@@ -3,6 +3,96 @@
 This project uses [CalVer](https://calver.org/) — versions are `YYYY.MM.DD`
 representing the date of release. Same-day fixes use `YYYY.MM.DD.N`.
 
+## 2026.05.18.9 — URGENT HOTFIX: Job.run() instance-attr capture (v2.8)
+
+**Critical bug present in every published version v1.0–v2.8.** Running
+any SSoT Fortinet Job through the Nautobot UI crashed immediately with:
+
+```
+AttributeError: 'ObjectVar' object has no attribute 'name'
+```
+
+Reported by an operator who was the first to actually click "Run Job
+Now" through the UI. Every prior verification (e2e scripts, dev seed
+data) called the DiffSync adapters directly, bypassing the Job
+lifecycle — so the bug never surfaced in our testing.
+
+### Root cause
+
+`nautobot_ssot.contrib.DataSource.run()` and `DataTarget.run()` capture
+only their own form vars (``dryrun``, ``memory_profiling``,
+``parallel_loading``) into instance attrs. Custom form vars
+(``external_integration``, ``vdom``, ``delete_records_missing_from_source``,
+``ap_*``) need explicit capture in an overridden ``run()`` method. We
+didn't have one, so ``self.external_integration`` resolved to the
+class-level ``ObjectVar`` descriptor and crashed at first attribute
+access.
+
+### Fix
+
+Added a ``run()`` override to all four broken Jobs:
+
+- ``FortiGateFirewallDataSource``
+- ``FortiGateWirelessDataSource``
+- ``FortiGateFirewallDataTarget``
+- ``FortiGateWirelessDataTarget``
+
+(``FortiGateLiveStatus`` was already correct — it inherits from plain
+``Job`` not ``DataSource``, and had its own ``run()``.)
+
+Each override captures the form kwargs as instance attrs, then forwards
+``*args, **kwargs`` to ``super().run()``. The base SSoT class continues
+to handle ``dryrun`` / ``memory_profiling`` / ``parallel_loading`` as
+before.
+
+### Bonus: Updated stale Job description
+
+While in the file: corrected the "Nautobot → FortiGate (firewall)" Job
+description from the stale v1.0 string ("Push Nautobot AddressObjects
+(ipmask type) to a FortiGate") to reflect what it actually does as of
+v2.7 (full CRUD across AddressObject, AddressObjectGroup, ServiceObject,
+ServiceObjectGroup, PolicyRule, NATPolicyRule).
+
+### Why our unit + e2e tests didn't catch this
+
+All 202 unit tests pass against v2.8 — they exercise DiffSync models,
+utility functions, and adapter behavior with mocked clients. The
+``run()`` lifecycle isn't unit-tested because the conftest stubs out
+Nautobot/Django entirely (heavy framework imports are too costly for
+fast unit tests).
+
+All 8 e2e scripts pass — they construct adapters directly and call
+``sync_from()`` themselves, bypassing the Job's ``run()`` path.
+
+**Neither path exercised the Job lifecycle that operators actually
+invoke through the Nautobot UI.** A v2.10 follow-up will add an
+integration test that actually instantiates and runs a Job through
+the real Nautobot lifecycle, in a separate ``tests/integration/`` tree
+that runs inside the dev container.
+
+### Live-verified
+
+```python
+job = FortiGateFirewallDataSource()
+job.run(dryrun=True, memory_profiling=False, parallel_loading=False,
+        external_integration=<ExternalIntegration>, vdom='root',
+        delete_records_missing_from_source=False)
+
+assert job.external_integration.name == 'fgt-dev'  # ✓
+assert job.vdom == 'root'                          # ✓
+```
+
+### Upgrade from v2026.05.18.8
+
+```bash
+pip install --upgrade nautobot-ssot-fortinet
+sudo systemctl restart nautobot nautobot-worker
+```
+
+No schema changes. No new Jobs. **If you were hitting the
+``AttributeError: 'ObjectVar' object has no attribute 'name'`` error,
+this upgrade resolves it. Re-run your Job through the UI.**
+
 ## 2026.05.18.8 — Docs screenshots + dev-stack DNS modernization (v2.7)
 
 Documentation polish + dev-stack convenience. No production code
