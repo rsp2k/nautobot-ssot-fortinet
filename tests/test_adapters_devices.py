@@ -174,6 +174,31 @@ class TestStaticRouteLoading:
         assert r.blackhole is True
         assert r.gateway == ""
 
+    def test_non_blackhole_route_blackhole_field_disable_string(self, base_adapter_kwargs):
+        """v3.2.2 regression guard — FortiOS returns 'disable' (string), not False.
+
+        Pre-v3.2.2 we did ``bool(raw.get("blackhole", False))`` which
+        evaluated ``bool("disable") == True`` — every non-blackhole route
+        was misclassified, and its gateway got wiped to '' downstream.
+        Caught against fgt-dev's actual default route during live
+        validation 2026-05-18.
+        """
+        routes = [
+            {
+                "seq-num": 1,
+                "dst": "0.0.0.0 0.0.0.0",
+                "gateway": "192.168.1.1",
+                "device": "wan2",
+                "blackhole": "disable",  # ← THE shape that broke v3.1/v3.2
+                "vdom": "root",
+            }
+        ]
+        adapter = FortiGateDevicesAdapter(client=_client_with_interfaces([], routes), **base_adapter_kwargs)
+        adapter.load()
+        r = next(iter(adapter.get_all("fortigate_static_route")))
+        assert r.blackhole is False
+        assert r.gateway == "192.168.1.1"
+
     def test_named_address_route_is_skipped(self, base_adapter_kwargs):
         """Routes using dstaddr (named address object) are skipped in v3.1."""
         routes = [

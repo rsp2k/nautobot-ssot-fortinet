@@ -246,9 +246,16 @@ class FortiGateDevicesAdapter(Adapter):
             if seq_num is None:
                 continue
 
-            # FortiOS distinguishes blackhole via the ``blackhole`` field;
-            # gateway is "0.0.0.0" for blackhole. Normalize to empty.
-            blackhole = bool(raw.get("blackhole", False)) or raw.get("blackhole") == "enable"
+            # FortiOS distinguishes blackhole via the ``blackhole`` field.
+            # IMPORTANT: FortiOS returns ``"disable"`` (string) NOT ``False`` —
+            # pre-v3.2.2 we wrapped with bool() which made every route look
+            # like a blackhole (``bool("disable") == True``). Match the
+            # exact "enable" value to catch real blackholes, and accept
+            # ``True`` for forward-compat with any FortiOS version that
+            # might switch to bools. Gateway is "0.0.0.0" for blackhole;
+            # normalize to empty so the diff sees consistent shape.
+            bh_raw = raw.get("blackhole")
+            blackhole = bh_raw == "enable" or bh_raw is True
             gateway = raw.get("gateway", "") or ""
             if blackhole or gateway == "0.0.0.0":
                 gateway = ""

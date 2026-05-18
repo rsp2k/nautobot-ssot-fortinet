@@ -3,6 +3,103 @@
 This project uses [CalVer](https://calver.org/) — versions are `YYYY.MM.DD`
 representing the date of release. Same-day fixes use `YYYY.MM.DD.N`.
 
+## 2026.05.18.13.2 — HOTFIX: blackhole field misclassification (v3.1 regression)
+
+**Bug present in v3.1 (2026.05.18.12), v3.2 (2026.05.18.13), and v3.2.1
+(2026.05.18.13.1).** Surfaced when running the Devices Job against the
+dev FortiWiFi-61E with a real DHCP-bound default route.
+
+### Root cause
+
+FortiOS returns the `blackhole` field as a **string** (`"enable"` or
+`"disable"`), not a Python bool. The v3.1 adapter did:
+
+```python
+blackhole = bool(raw.get("blackhole", False)) or raw.get("blackhole") == "enable"
+```
+
+The first clause `bool("disable") == True` (non-empty string is truthy),
+so **every** non-blackhole route was misclassified as blackhole. The
+subsequent gateway normalization then wiped the gateway to `""` since
+"blackhole" routes don't have one.
+
+### Live evidence from the dev FortiWiFi-61E
+
+Pre-v3.2.2 sync output:
+
+```
+✓ seq=9001  203.0.113.0/24  via BLACKHOLE  dev=wan2  distance=10
+```
+
+Post-v3.2.2 (correct):
+
+```
+✓ seq=9001  203.0.113.0/24  via 192.168.1.1  dev=wan2  distance=10
+```
+
+### Fix
+
+Match FortiOS's actual string shape explicitly, accepting `True` for
+forward-compat:
+
+```python
+bh_raw = raw.get("blackhole")
+blackhole = bh_raw == "enable" or bh_raw is True
+```
+
+### New regression-guard test
+
+`test_non_blackhole_route_blackhole_field_disable_string` in
+`tests/test_adapters_devices.py` uses the exact FortiOS shape that
+broke us (`"blackhole": "disable"`) and asserts the route surfaces with
+`blackhole=False` + gateway preserved. **250 unit tests pass** (was 249).
+
+### Why our existing tests missed it
+
+The existing `test_blackhole_route_has_empty_gateway` used
+`"blackhole": "enable"` (the positive case). The negative-case shape
+was never tested — and FortiOS only returns `"disable"` for routes you
+actually want preserved, which the fixture didn't have.
+
+### Live-verified on real hardware
+
+Inject script + revalidate cycle confirmed the fix against the dev
+FortiWiFi-61E (FortiOS 7.0.14): VLAN sub-interface + static route both
+sync end-to-end through the Job → write to FortinetStaticRoute Django
+model → render correctly in the Nautobot UI. Browser-rendered table
+shows `Blackhole: ✘` for the non-blackhole route.
+
+### Also in this release
+
+- New helper scripts in `development/scripts/`:
+  - `e2e_v31_inject_testdata.py` — injects a test VLAN + route on
+    fgt-dev (used to reproduce the bug)
+  - `e2e_v32_hw_validate.py` — full v3.1/v3.2 live validation against
+    fgt-dev; prints HOPOPT services, placeholder addresses, VLAN
+    sub-interfaces, and routes
+
+### Lesson — caught by integration testing, not unit testing
+
+Our unit test fixtures used FortiOS's positive case (`"enable"`) but
+not the negative case (`"disable"`). The mocked Connector accepted
+either silently. Running against a real FortiGate is what surfaced the
+bug — same pattern as v2.8 (Kevin's `Job.run()` discovery) and v3.2.1
+(dev-stack navigation crash). **Integration validation against real
+Nautobot AND real hardware is the only thing that exercises the full
+field-shape contract.**
+
+### Upgrade from any v3.1 / v3.2 / v3.2.1
+
+```bash
+pip install --upgrade nautobot-ssot-fortinet
+sudo systemctl restart nautobot nautobot-worker
+```
+
+No migration. **Operators who synced routes between v3.1 and v3.2.1
+will have all-`blackhole=True` records in `FortinetStaticRoute` with
+empty gateways.** After upgrading, re-run the Devices Job to refresh:
+the blackhole flag and gateway will be corrected on the next sync.
+
 ## 2026.05.18.13.1 — HOTFIX: navigation.py NavMenuGroup type error (v3.1 regression)
 
 **Crash bug present in v3.1 (2026.05.18.12) and the just-released v3.2
