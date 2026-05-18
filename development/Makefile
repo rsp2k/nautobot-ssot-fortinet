@@ -102,6 +102,12 @@ e2e-push-vap:
 
 e2e-push-all: e2e-push-address e2e-push-addrgrp e2e-push-service e2e-push-svcgrp e2e-push-policy e2e-push-nat e2e-push-wtp e2e-push-vap
 
+# Job lifecycle integration test (v2.10+) — closes the test gap that allowed
+# v2.9's "AttributeError: 'ObjectVar' object has no attribute 'name'" bug.
+# Exercises every SSoT Job's run() path with dryrun=True.
+e2e-jobs-lifecycle:
+	$(DC) exec $(WEB) nautobot-server shell_plus --quiet-load --command "exec(open('/opt/nautobot/jobs/dev_scripts/e2e_jobs_lifecycle.py').read()); run()"
+
 check-navs:
 	$(DC) exec $(WEB) nautobot-server shell_plus --quiet-load -c "\
 from django.apps import apps; \

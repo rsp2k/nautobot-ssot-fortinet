@@ -3,6 +3,69 @@
 This project uses [CalVer](https://calver.org/) — versions are `YYYY.MM.DD`
 representing the date of release. Same-day fixes use `YYYY.MM.DD.N`.
 
+## 2026.05.18.10 — v2.9 regression guard: Job.run() lifecycle test (v2.9)
+
+Closes the test gap that allowed v2.9's bug to exist for 8 releases.
+No production code changes — every src/ file is byte-identical to v2.9.
+
+### New integration test
+
+`development/scripts/e2e_jobs_lifecycle.py` exercises each of the 4 SSoT
+Jobs' ``run()`` override against the dev stack's real Nautobot:
+
+- Instantiates the Job class
+- Calls ``run()`` with realistic form kwargs (matches the UI submission)
+- Patches the base SSoT ``run()`` to a no-op (skips Celery context
+  requirements)
+- Asserts that custom form vars (``external_integration``, ``vdom``,
+  ``delete_records_missing_from_source``, ``ap_*``) land on the
+  instance as the resolved model values, not as the ObjectVar/StringVar
+  descriptor objects
+
+Run via `make -C development e2e-jobs-lifecycle`.
+
+### Empirically verified to catch the v2.9 bug
+
+The session record includes a sabotage test: temporarily removed the
+``run()`` override from ``FortiGateFirewallDataSource`` (simulating
+pre-v2.9 code) and re-ran the test — it correctly reported
+"1 of 4 tests FAILED". Restored the code, all 4 pass.
+
+If anyone ever refactors a Job's form-var schema and forgets to update
+the corresponding ``run()`` override, this test catches it before any
+operator does.
+
+### Why this is its own release
+
+- v2.9 was an urgent hotfix shipped immediately when Kevin reported the
+  bug. Adding the regression guard would have delayed the fix.
+- v2.10 closes the loop without rushing.
+- Same pattern as v2.4 → v2.5: hotfix first, regression guard next.
+
+### Why this isn't a unit test
+
+`tests/conftest.py` stubs out Nautobot and Django entirely for fast unit
+testing — but that means the real Job classes can't be exercised there.
+The dev container (which the integration test runs in) has the real
+environment.
+
+The complementary lifecycle proof is the Playwright UI test from the
+session record: it ran the firewall pull Job through the actual Nautobot
+web UI on v2.9 and observed `Status: Completed` in 0.43 seconds — i.e.
+the full Celery+JobResult+sync path works end-to-end on real hardware.
+This integration test handles the unit-test-equivalent contract; the
+Playwright session handles the system-integration contract.
+
+### Upgrade from v2026.05.18.9
+
+```bash
+pip install --upgrade nautobot-ssot-fortinet
+```
+
+No production code changes. No DB migrations. The integration test is
+in `development/` and ships in the sdist but only matters if you run
+the dev stack.
+
 ## 2026.05.18.9 — URGENT HOTFIX: Job.run() instance-attr capture (v2.8)
 
 **Critical bug present in every published version v1.0–v2.8.** Running
