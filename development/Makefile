@@ -76,6 +76,15 @@ e2e-live-wireless:
 e2e-push-validate:
 	$(DC) exec $(WEB) nautobot-server shell_plus --quiet-load --command "exec(open('/opt/nautobot/jobs/dev_scripts/e2e_push_validate.py').read()); run()"
 
+e2e-push-wtp:
+	$(DC) exec $(WEB) nautobot-server shell_plus --quiet-load --command "exec(open('/opt/nautobot/jobs/dev_scripts/e2e_push_wtp_profile.py').read()); run()"
+
+e2e-push-policy:
+	$(DC) exec $(WEB) nautobot-server shell_plus --quiet-load --command "exec(open('/opt/nautobot/jobs/dev_scripts/e2e_push_policy.py').read()); run()"
+
+e2e-push-nat:
+	$(DC) exec $(WEB) nautobot-server shell_plus --quiet-load --command "exec(open('/opt/nautobot/jobs/dev_scripts/e2e_push_nat.py').read()); run()"
+
 check-navs:
 	$(DC) exec $(WEB) nautobot-server shell_plus --quiet-load -c "\
 from django.apps import apps; \

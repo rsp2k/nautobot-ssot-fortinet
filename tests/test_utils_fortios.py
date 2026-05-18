@@ -532,3 +532,61 @@ class TestCheckFortiOSResponse:
 
         with pytest.raises(FortiOSAPIError):
             check_fortios_response(Weird(), label="x")
+
+
+# ---------------------------------------------------------------------------
+# strip_pull_annotations — added in v2.5 to fix round-trip annotation dup
+# ---------------------------------------------------------------------------
+
+
+class TestStripPullAnnotations:
+    """Pull adapter appends [srcintf=...]/[extintf=...] to descriptions.
+    When pushed back as a comment, that annotation lives on FortiOS. On
+    next pull, the appender re-adds it → duplication. This strips
+    machine-generated annotations before re-appending so the round-trip
+    is stable.
+    """
+
+    def test_strips_srcintf_dstintf(self):
+        from nautobot_ssot_fortinet.utils.fortios import strip_pull_annotations
+
+        assert strip_pull_annotations("Allow web [srcintf=lan dstintf=wan1]") == "Allow web"
+
+    def test_strips_extintf(self):
+        from nautobot_ssot_fortinet.utils.fortios import strip_pull_annotations
+
+        assert strip_pull_annotations("VIP test [extintf=wan1]") == "VIP test"
+
+    def test_strips_portforward(self):
+        from nautobot_ssot_fortinet.utils.fortios import strip_pull_annotations
+
+        assert strip_pull_annotations("[portforward TCP 80 -> 8080]") == ""
+
+    def test_strips_multiple_annotations(self):
+        from nautobot_ssot_fortinet.utils.fortios import strip_pull_annotations
+
+        assert strip_pull_annotations("v [extintf=wan1] [portforward TCP 80 -> 8080]") == "v"
+
+    def test_preserves_operator_brackets(self):
+        from nautobot_ssot_fortinet.utils.fortios import strip_pull_annotations
+
+        # Operator-added brackets like [CHANGE-1234] should survive
+        assert strip_pull_annotations("[CHANGE-1234] Allow web [srcintf=lan dstintf=wan1]") == "[CHANGE-1234] Allow web"
+
+    def test_passthrough_when_no_annotations(self):
+        from nautobot_ssot_fortinet.utils.fortios import strip_pull_annotations
+
+        assert strip_pull_annotations("just a comment") == "just a comment"
+
+    def test_empty_string(self):
+        from nautobot_ssot_fortinet.utils.fortios import strip_pull_annotations
+
+        assert strip_pull_annotations("") == ""
+
+    def test_idempotent(self):
+        """Stripping twice should produce the same result as stripping once."""
+        from nautobot_ssot_fortinet.utils.fortios import strip_pull_annotations
+
+        once = strip_pull_annotations("Allow web [srcintf=lan dstintf=wan1]")
+        twice = strip_pull_annotations(once)
+        assert once == twice

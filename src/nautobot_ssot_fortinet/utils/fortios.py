@@ -235,6 +235,49 @@ def parse_intf_annotation(description: str, key: str) -> list[str]:
     return [part for part in match.group(1).split(",") if part]
 
 
+def strip_pull_annotations(comment: str) -> str:
+    """Remove the machine-generated annotations that the pull adapter adds.
+
+    The pull adapter appends annotations like ``[srcintf=lan dstintf=wan1]``
+    and ``[extintf=wan1]`` and ``[portforward TCP 80 -> 8080]`` to the
+    FortiOS-side comment when building the description. When we push the
+    description BACK to FortiOS as a comment, we have to strip those
+    annotations first — otherwise the next pull sees the annotation in
+    the FortiOS comment AND re-adds it, producing duplicated
+    ``[extintf=wan1] [extintf=wan1]`` on every round-trip.
+
+    Only strips the exact shapes the pull adapter produces. Operator-added
+    bracket content (``[INTERNAL]``, ``[CHANGE-1234]``, etc.) is preserved
+    because the annotation keys (``srcintf``, ``dstintf``, ``extintf``,
+    ``portforward``) are extremely unlikely to appear in human comments.
+
+    >>> strip_pull_annotations("Allow web [srcintf=lan dstintf=wan1]")
+    'Allow web'
+    >>> strip_pull_annotations("VIP for app [extintf=wan1]")
+    'VIP for app'
+    >>> strip_pull_annotations("Port-fwd [extintf=wan1] [portforward TCP 80 -> 8080]")
+    'Port-fwd'
+    >>> strip_pull_annotations("[CHANGE-1234] Allow web [srcintf=lan dstintf=wan1]")
+    '[CHANGE-1234] Allow web'
+    >>> strip_pull_annotations("just a comment")
+    'just a comment'
+    """
+    import re
+
+    patterns = [
+        # [srcintf=... dstintf=...]
+        r"\s*\[srcintf=[^\]]*dstintf=[^\]]*\]",
+        # [extintf=...]
+        r"\s*\[extintf=[^\]]+\]",
+        # [portforward PROTO PORT -> PORT]
+        r"\s*\[portforward\s+[^\]]+\]",
+    ]
+    out = comment
+    for pat in patterns:
+        out = re.sub(pat, "", out)
+    return out.strip()
+
+
 def denormalize_port_separators(comma_form: str) -> str:
     """Inverse of :func:`_normalize_port_separators`: comma → space.
 

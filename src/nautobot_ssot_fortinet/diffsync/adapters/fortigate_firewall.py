@@ -34,6 +34,7 @@ from nautobot_ssot_fortinet.utils.fortios import (
     fortios_subnet_to_cidr,
     mangle_name,
     split_policy_members,
+    strip_pull_annotations,
 )
 
 if TYPE_CHECKING:
@@ -280,8 +281,12 @@ class FortiGateFirewallAdapter(Adapter):
             dstintf = sorted(i.get("name") for i in raw.get("dstintf", []) if i.get("name"))
 
             description_parts = []
-            if raw.get("comments"):
-                description_parts.append(raw["comments"])
+            # Strip any prior-push annotations from the FortiOS comment so
+            # the round-trip is stable (otherwise [srcintf=...] gets
+            # doubled on every push → pull → push cycle).
+            stripped_comment = strip_pull_annotations(raw.get("comments", ""))
+            if stripped_comment:
+                description_parts.append(stripped_comment)
             if srcintf or dstintf:
                 description_parts.append(f"[srcintf={','.join(srcintf) or '-'} dstintf={','.join(dstintf) or '-'}]")
             if action_note:
@@ -384,8 +389,12 @@ class FortiGateFirewallAdapter(Adapter):
             # Build the NATPolicyRule referencing the synthesized records.
             rule_name = mangle_name(self.hostname, self.vdom, f"nat_rule_{vip_name}")
             description_parts: list[str] = []
-            if raw.get("comment"):
-                description_parts.append(raw["comment"])
+            # Strip any prior-push annotations from the FortiOS comment so
+            # the round-trip is stable (otherwise [extintf=...] gets
+            # doubled on every push → pull → push cycle).
+            stripped_comment = strip_pull_annotations(raw.get("comment", ""))
+            if stripped_comment:
+                description_parts.append(stripped_comment)
             extintf = raw.get("extintf", "")
             if extintf:
                 description_parts.append(f"[extintf={extintf}]")
@@ -479,7 +488,17 @@ def _address_value(raw: dict) -> tuple[str | None, str]:
         subnet = raw.get("subnet", "")
         if not subnet:
             return None, ""
-        return "ipmask", fortios_subnet_to_cidr(subnet)
+        cidr = fortios_subnet_to_cidr(subnet)
+        # /32 ipmask records → classify as ipaddress (single host).
+        # FortiOS has no separate "host IP" type — IPv4 host addresses are
+        # always stored as `subnet: 'IP 255.255.255.255'`. Treating them
+        # as ipmask /32 on pull breaks round-trip with VIP-synthesized
+        # addresses (which we push as ipaddress/bare-IP). Normalizing
+        # here makes the round-trip stable AND aligns with Nautobot's
+        # IPAddress semantic for host IPs.
+        if cidr.endswith("/32"):
+            return "ipaddress", cidr.rsplit("/", 1)[0]
+        return "ipmask", cidr
     if ftype == "fqdn":
         fqdn = raw.get("fqdn", "")
         return ("fqdn", fqdn) if fqdn else (None, "")

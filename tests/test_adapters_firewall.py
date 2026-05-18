@@ -68,10 +68,16 @@ class TestAddressObjectLoad:
         assert web.original_name == "WEB_SERVERS"
         assert web.description == "Public web tier"
 
-    def test_host_via_32_mask_becomes_slash_32(self, adapter):
+    def test_host_via_32_mask_becomes_ipaddress(self, adapter):
+        # v2.5+: /32 ipmask addresses normalize to address_type=ipaddress
+        # with bare IP value (no /32 suffix). FortiOS has no separate
+        # "host" type — it always stores host IPs as ipmask with full
+        # mask — so this normalization is required for push/pull
+        # round-trip stability with VIP-synthesized addresses, and
+        # aligns with Nautobot's IPAddress semantic for host IPs.
         db = adapter.get("address_object", "fgt-edge1__root__DB_HOST_1")
-        assert db.address_type == "ipmask"
-        assert db.value == "10.0.20.5/32"
+        assert db.address_type == "ipaddress"
+        assert db.value == "10.0.20.5"
 
     def test_any_address_round_trip(self, adapter):
         all_obj = adapter.get("address_object", "fgt-edge1__root__all")

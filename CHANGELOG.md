@@ -3,6 +3,87 @@
 This project uses [CalVer](https://calver.org/) — versions are `YYYY.MM.DD`
 representing the date of release. Same-day fixes use `YYYY.MM.DD.N`.
 
+## 2026.05.18.5 — Policy + NAT push live-validated; round-trip stability (v2.4)
+
+Direct follow-up to the v2.4 hotfix retrospective. Policy and NAT push
+were claimed to work in v2.0/v2.1 but never actually exercised against
+a real FortiGate (the broken `.get(uid=...)` verification pattern
+produced false positives). This release adds focused end-to-end live
+test scripts AND fixes two round-trip stability bugs surfaced by them.
+
+### Live-validated push paths
+
+Two new e2e scripts in `development/scripts/` (mountable into the dev
+stack via `make e2e-push-policy` / `make e2e-push-nat`):
+
+- **`e2e_push_policy.py`** — full PolicyRule CRUD against fgt-dev:
+  inject Nautobot rule → push CREATE → verify on device → toggle log
+  field → push UPDATE → verify → delete from Nautobot → push DELETE →
+  verify gone. Uses `policyid=9999` (well outside operator range) and
+  references existing FortiGate addresses for isolation.
+- **`e2e_push_nat.py`** — NATPolicyRule (VIP) CRUD with the
+  synthesized `vip_*_ext`/`vip_*_mapped` AddressObject round-trip.
+  Uses RFC 5737 documentation IPs and replaces the address pointer
+  (not the IP value) for the UPDATE step.
+
+Both tests passed against a live FortiWiFi-61E running FortiOS 7.0.14.
+
+### Round-trip stability fixes
+
+- **`/32` ipmask addresses normalize to `ipaddress` on pull.** FortiOS
+  has no separate "host" address type — IPv4 host IPs are always stored
+  as `type=ipmask, subnet='IP 255.255.255.255'`. Pre-v2.5 we classified
+  this as `ipmask` with value `'IP/32'`, but push code maps DiffSync
+  `ipaddress` back to FortiOS `ipmask /32`. Result: round-trip asymmetry
+  → phantom diffs on every push. Now both directions converge.
+- **`strip_pull_annotations()` helper** strips machine-generated
+  `[srcintf=...]`, `[extintf=...]`, `[portforward ...]` markers from
+  the FortiOS comment BEFORE re-adding them on subsequent pulls.
+  Pre-v2.5 the annotation doubled on every round-trip cycle
+  (`[extintf=wan1] [extintf=wan1]` → triple → infinite). Operator-added
+  brackets (`[CHANGE-1234]`) are preserved.
+
+### Known minor cosmetic — clears with first pull after upgrade
+
+If you upgrade with existing Nautobot AddressObject records that were
+loaded under the pre-v2.5 ipmask /32 classification, you'll see a
+one-time phantom diff for those records (now `ipaddress` from the
+FortiGate side, still `ipmask` from the ORM). **Run the pull Job once
+after upgrading** — it'll rewrite those ORM records under the new
+classification. After that, push diffs are stable.
+
+### Findings deferred to v2.6+ design
+
+- **NAT update via address-value-change doesn't propagate.** If an
+  operator edits the IP of an existing `vip_*_mapped` AddressObject,
+  the rule's `translated_destination_addresses` M2M still references
+  the same record by name → no rule-level diff → no `vip.update()`.
+  Architecturally clean workaround today: point the rule at a different
+  AddressObject. Open design question: should the rule's diff fingerprint
+  the resolved IP *values* too, so a referenced address changing triggers
+  a rule diff?
+
+### Tests
+
+- **201 unit tests** (was 193 in v2.4)
+- +8 tests for `strip_pull_annotations` (each annotation type + operator
+  bracket preservation + idempotency + empty-string + passthrough)
+- 1 corrected test (`test_host_via_32_mask_becomes_slash_32` →
+  `test_host_via_32_mask_becomes_ipaddress`) — was asserting the
+  round-trip-breaking behavior we just fixed.
+
+### Upgrade from v2026.05.18.4
+
+```bash
+pip install --upgrade nautobot-ssot-fortinet
+nautobot-server collectstatic --no-input
+sudo systemctl restart nautobot nautobot-worker
+# Recommended: run the pull Job once to migrate any pre-v2.5 /32
+# AddressObject records to the new ipaddress classification.
+```
+
+No new Jobs. No schema changes.
+
 ## 2026.05.18.4 — Push direction hotfix: actually-works edition (v2.3)
 
 Hotfix for v2.2 (2026.05.18.3) and **multiple latent bugs from v2.0+**
