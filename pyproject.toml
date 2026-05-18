@@ -54,6 +54,8 @@ docs = [
     "mkdocs-material>=9.5,<10",
     "mkdocstrings[python]>=0.26,<1",
     "mkdocs-glightbox>=0.4,<1",
+    "mkdocs-include-markdown-plugin>=6.2,<8",
+    "pymdown-extensions>=10.7",
     "markdown-version-annotations>=1.0,<2",
 ]
 

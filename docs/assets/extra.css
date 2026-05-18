@@ -1,0 +1,14 @@
+/* Match the Nautobot docs feel: tighter line-height in dense tables,
+ * brighter accent on the dark theme. */
+.md-typeset table:not([class]) th {
+  background-color: var(--md-default-fg-color--lightest);
+}
+
+.md-typeset table:not([class]) tbody tr:hover {
+  background-color: var(--md-default-fg-color--lightest);
+}
+
+/* Make composite-identity tuples stand out */
+.md-typeset code {
+  font-size: 0.85em;
+}

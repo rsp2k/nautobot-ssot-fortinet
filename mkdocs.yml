@@ -1,0 +1,103 @@
+---
+dev_addr: "127.0.0.1:8001"
+edit_uri: "edit/main/docs"
+site_dir: "src/nautobot_ssot_fortinet/static/nautobot_ssot_fortinet/docs"
+site_name: "Nautobot SSoT Fortinet Documentation"
+site_url: "https://nautobot-ssot-fortinet.readthedocs.io/en/latest/"
+repo_url: "https://github.com/rsp2k/nautobot-ssot-fortinet"
+copyright: "Copyright &copy; The Authors"
+theme:
+  name: "material"
+  navigation_depth: 4
+  hljs_languages:
+    - "django"
+    - "yaml"
+    - "python"
+    - "shell"
+    - "json"
+  features:
+    - "content.action.edit"
+    - "content.action.view"
+    - "content.code.copy"
+    - "navigation.footer"
+    - "navigation.indexes"
+    - "navigation.tabs"
+    - "navigation.tabs.sticky"
+    - "navigation.tracking"
+    - "search.highlight"
+    - "search.share"
+    - "search.suggest"
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: "default"
+      primary: "black"
+      toggle:
+        icon: "material/weather-sunny"
+        name: "Switch to dark mode"
+    - media: "(prefers-color-scheme: dark)"
+      scheme: "slate"
+      primary: "black"
+      toggle:
+        icon: "material/weather-night"
+        name: "Switch to light mode"
+extra_css:
+  - "assets/extra.css"
+
+extra:
+  generator: false
+
+markdown_extensions:
+  - "admonition"
+  - "toc":
+      permalink: true
+  - "attr_list"
+  - "md_in_html"
+  - "pymdownx.details"
+  - "pymdownx.highlight":
+      anchor_linenums: true
+  - "pymdownx.inlinehilite"
+  - "pymdownx.snippets"
+  - "pymdownx.superfences":
+      custom_fences:
+        - name: "mermaid"
+          class: "mermaid"
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - "pymdownx.blocks.caption"
+  - "footnotes"
+  - "meta"
+
+plugins:
+  - "search"
+  - "glightbox"
+
+watch:
+  - "README.md"
+
+validation:
+  omitted_files: "warn"
+  absolute_links: "warn"
+  unrecognized_links: "warn"
+  anchors: "warn"
+
+nav:
+  - Overview: "index.md"
+  - User Guide:
+      - App Overview: "user/app_overview.md"
+      - Getting Started: "user/app_getting_started.md"
+      - Using the App: "user/app_use_cases.md"
+      - External Interactions: "user/external_interactions.md"
+      - FAQ: "user/faq.md"
+  - Administrator Guide:
+      - Install and Configure: "admin/install.md"
+      - Upgrade: "admin/upgrade.md"
+      - Uninstall: "admin/uninstall.md"
+      - Compatibility Matrix: "admin/compatibility_matrix.md"
+      - Troubleshooting: "admin/troubleshooting.md"
+      - Release Notes:
+          - "admin/release_notes/index.md"
+          - v2026.05.18: "admin/release_notes/version_2026.05.18.md"
+  - Developer Guide:
+      - Architecture: "dev/architecture.md"
+      - Extending the App: "dev/extending.md"
+      - Contributing to the App: "dev/contributing.md"
+      - Development Environment: "dev/dev_environment.md"

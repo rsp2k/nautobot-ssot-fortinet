@@ -6,7 +6,7 @@
 
 [![Tests](https://img.shields.io/badge/tests-174%20passing-brightgreen)](#testing)
 [![Live-validated](https://img.shields.io/badge/live--validated-FortiWiFi--61E-blue)](#what-this-does)
-[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](pyproject.toml)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://github.com/rsp2k/nautobot-ssot-fortinet/blob/main/pyproject.toml)
 [![Nautobot](https://img.shields.io/badge/nautobot-3.1%2B-orange)](https://nautobot.com/)
 
 ## What this does
@@ -65,7 +65,7 @@ make -C development seed
 ```
 
 For full installation steps including production deployment, see
-[`docs/admin/install.md`](docs/admin/install.md).
+[`docs/admin/install.md`](https://github.com/rsp2k/nautobot-ssot-fortinet/blob/main/docs/admin/install.md).
 
 ## Live-validated against real hardware
 
@@ -88,7 +88,7 @@ Real-world quirks discovered & handled:
 | FortiOS radio band strings (`802.11ax-5G`) | Pattern-matched to `2.4GHz`/`5GHz`/`6GHz` enum |
 | FortiOS VAP `security: "wep128"` | Lossy mapping → `Open` with annotation in description |
 
-See [`docs/admin/mapping.md`](docs/admin/mapping.md) for the complete
+See [`docs/user/external_interactions.md`](https://github.com/rsp2k/nautobot-ssot-fortinet/blob/main/docs/user/external_interactions.md) for the complete
 field-by-field reference.
 
 ## What's required
@@ -99,7 +99,7 @@ field-by-field reference.
 - **fortigate-api 2.0+** (REST client; verified against FortiOS 6.4–7.x)
 - **Python 3.10–3.13**
 
-See [`docs/admin/compatibility.md`](docs/admin/compatibility.md) for the
+See [`docs/admin/compatibility_matrix.md`](https://github.com/rsp2k/nautobot-ssot-fortinet/blob/main/docs/admin/compatibility_matrix.md) for the
 detailed compatibility matrix and version pinning rationale.
 
 ## What's _not_ in scope (yet)
@@ -153,7 +153,7 @@ deployments should validate carefully (the name-mangling convention
 handles cross-device uniqueness, but multi-VDOM hostnames with `__`
 characters need attention).
 
-Roadmap: see [`CHANGELOG.md`](CHANGELOG.md).
+Roadmap: see [`CHANGELOG.md`](https://github.com/rsp2k/nautobot-ssot-fortinet/blob/main/CHANGELOG.md).
 
 ## License
 

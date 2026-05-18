@@ -1,4 +1,4 @@
-# FortiOS ↔ Nautobot Mapping Reference
+# External Interactions
 
 The complete field-by-field translation reference. Every quirk in here
 emerged from live FortiOS data during development and is implemented in

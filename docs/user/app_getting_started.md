@@ -1,4 +1,4 @@
-# Quick Start for Operators
+# Getting Started with the App
 
 If you just want to sync a FortiGate into Nautobot in 10 minutes, this is for you.
 

@@ -123,7 +123,7 @@ If `make e2e-live-firewall` or `make e2e-live-wireless` fails:
    versions emitting fields the integration didn't expect. The e2e
    scripts wrap exceptions and print the offending record's MAC/name
    when possible. See the data-quirk diagnostic patterns in
-   [`mapping.md`](mapping.md).
+   [`../user/external_interactions.md`](../user/external_interactions.md).
 
 ---
 

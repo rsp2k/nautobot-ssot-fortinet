@@ -1,4 +1,6 @@
-# Installation
+# Installing the App in Nautobot
+
+This page covers **install** and **configure** for `nautobot-ssot-fortinet` in your Nautobot environment.
 
 ## Prerequisites
 
