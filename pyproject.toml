@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nautobot-ssot-fortinet"
-version = "2026.5.18"
+version = "2026.5.18.1"
 description = "Nautobot SSoT integration for Fortinet (FortiGate firewall + FortiAP wireless, one-way: FortiGate -> Nautobot)."
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
@@ -111,6 +111,7 @@ ignore = [
 "src/nautobot_ssot_fortinet/diffsync/models/nautobot_firewall.py" = ["D102", "D107", "D417"]
 "src/nautobot_ssot_fortinet/diffsync/models/nautobot_wireless.py" = ["D102", "D107", "D417"]
 "src/nautobot_ssot_fortinet/diffsync/models/fortigate_target_firewall.py" = ["D102", "D107", "D417"]
+"src/nautobot_ssot_fortinet/diffsync/models/fortigate_target_wireless.py" = ["D102", "D107", "D417"]
 # Same justification for the FortiGate adapter __init__ signatures —
 # Args: blocks are documented; the *args/**kwargs passthroughs aren't.
 "src/nautobot_ssot_fortinet/diffsync/adapters/*.py" = ["D107", "D417"]

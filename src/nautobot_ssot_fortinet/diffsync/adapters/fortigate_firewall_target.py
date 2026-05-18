@@ -24,6 +24,10 @@ from nautobot_ssot_fortinet.diffsync.adapters.fortigate_firewall import (
 from nautobot_ssot_fortinet.diffsync.models.fortigate_target_firewall import (
     FortiGateAddressObject,
     FortiGateAddressObjectGroup,
+    FortiGateNATPolicy,
+    FortiGateNATPolicyRule,
+    FortiGatePolicy,
+    FortiGatePolicyRule,
     FortiGateServiceObject,
     FortiGateServiceObjectGroup,
 )
@@ -36,6 +40,10 @@ class FortiGateFirewallTargetAdapter(FortiGateFirewallAdapter):
     address_object_group = FortiGateAddressObjectGroup
     service_object = FortiGateServiceObject
     service_object_group = FortiGateServiceObjectGroup
+    policy = FortiGatePolicy
+    policy_rule = FortiGatePolicyRule
+    nat_policy = FortiGateNATPolicy
+    nat_policy_rule = FortiGateNATPolicyRule
 
     # ``load`` is INHERITED from FortiGateFirewallAdapter — we read the
     # full firewall state from the device so DiffSync sees accurate diffs

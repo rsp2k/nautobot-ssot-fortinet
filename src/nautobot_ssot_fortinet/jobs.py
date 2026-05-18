@@ -30,6 +30,9 @@ from nautobot_ssot_fortinet.diffsync.adapters.fortigate_firewall_target import (
 from nautobot_ssot_fortinet.diffsync.adapters.fortigate_wireless import (
     FortiGateWirelessAdapter,
 )
+from nautobot_ssot_fortinet.diffsync.adapters.fortigate_wireless_target import (
+    FortiGateWirelessTargetAdapter,
+)
 from nautobot_ssot_fortinet.diffsync.adapters.nautobot_firewall import (
     NautobotFirewallAdapter,
 )
@@ -483,10 +486,88 @@ class FortiGateFirewallDataTarget(DataTarget):
             super().execute_sync()
 
 
+class FortiGateWirelessDataTarget(DataTarget):
+    """Push Nautobot wireless config to a FortiGate.
+
+    Scope (v2.0):
+
+    - ``WirelessNetwork`` (VAP) — full create/update/delete via
+      ``cmdb/wireless-controller/vap``
+    - ``RadioProfile`` — **update only** via partial wtp-profile updates.
+      Parent wtp-profile must exist on the device; create/delete of a
+      single radio is not supported.
+    - Access Points (Devices) — push is a no-op in this version.
+    """
+
+    external_integration = ObjectVar(
+        model=ExternalIntegration,
+        description="FortiGate to push to. Must already be synced via the pull Job first.",
+    )
+    vdom = StringVar(
+        default="root",
+        description="FortiOS VDOM scope. Must match what the pull Job used.",
+    )
+    delete_records_missing_from_source = BooleanVar(
+        default=False,
+        description=(
+            "If True, delete FortiGate wireless records that no longer exist in "
+            "Nautobot. DANGEROUS — could remove wireless config you didn't intend "
+            "to delete. Default False = additive/update only."
+        ),
+    )
+
+    class Meta:
+        """Job metadata."""
+
+        name = "Nautobot -> FortiGate (wireless)"
+        data_source = "Nautobot"
+        data_target = "FortiGate"
+        description = "Push Nautobot WirelessNetworks (VAPs) + RadioProfile updates to a FortiGate."
+
+    def load_source_adapter(self) -> None:
+        """Load Nautobot wireless state (read-only) scoped to this FortiGate's prefix."""
+        self.source_adapter = NautobotWirelessAdapter(
+            hostname=self.external_integration.name,
+            vdom=self.vdom,
+            job=self,
+            sync=self.sync,
+        )
+        self.source_adapter.load()
+        self.logger.info(
+            f"Loaded from Nautobot: "
+            f"{len(self.source_adapter.get_all('wireless_network'))} WirelessNetworks, "
+            f"{len(self.source_adapter.get_all('radio_profile'))} RadioProfiles"
+        )
+
+    def load_target_adapter(self) -> None:
+        """Load current FortiGate wireless state into the write-enabled target adapter."""
+        self.logger.info(f"Connecting to FortiGate via ExternalIntegration {self.external_integration.name!r}...")
+        with build_client(self.external_integration) as client:
+            self.target_adapter = FortiGateWirelessTargetAdapter(
+                client=client,
+                hostname=self.external_integration.name,
+                vdom=self.vdom,
+                job=self,
+                sync=self.sync,
+            )
+            self.target_adapter.load()
+
+    def execute_sync(self) -> None:
+        """Apply the diff with a re-opened client; strip deletes unless explicitly enabled."""
+        if not self.delete_records_missing_from_source:
+            for top in self.target_adapter.top_level:
+                self.diff.remove_unprocessed_children(top, "-")
+            self.logger.info("Additive-only mode: any FortiGate records absent from Nautobot were NOT deleted.")
+        with build_client(self.external_integration) as client:
+            self.target_adapter.client = client
+            super().execute_sync()
+
+
 jobs = [
     FortiGateFirewallDataSource,
     FortiGateWirelessDataSource,
     FortiGateLiveStatus,
     FortiGateFirewallDataTarget,
+    FortiGateWirelessDataTarget,
 ]
 register_jobs(*jobs)

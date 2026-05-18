@@ -4,16 +4,19 @@ The inverse of ``nautobot_firewall.py``: instead of writing to the
 Nautobot ORM, these write to the FortiGate REST API via the adapter's
 ``client`` attribute.
 
-**Scope (v0.2):**
+**Scope (v2.0):**
 
-- AddressObject — all 4 types (ipmask, fqdn, iprange, ipaddress)
-- AddressObjectGroup — resolves members by un-mangled name
-- ServiceObject — full inverse of pull-side mapping (TCP/UDP/SCTP, ICMP,
-  ICMP6, IP-numbered protocols)
-- ServiceObjectGroup — resolves members by composite NK
-
-Policies and NAT are not yet push-enabled — those inherit the base
-read-only classes whose CRUD methods are DiffSync no-ops.
+- AddressObject — all 4 types (ipmask, fqdn, iprange, ipaddress), full CRUD
+- AddressObjectGroup — full CRUD; resolves members by un-mangled name
+- ServiceObject — full CRUD; full inverse of pull-side mapping
+  (TCP/UDP/SCTP, ICMP, ICMP6, IP-numbered protocols)
+- ServiceObjectGroup — full CRUD; resolves members by composite NK
+- Policy — no-op container (FortiOS has no Policy concept)
+- PolicyRule — **UPDATE + DELETE only**. Create is v2.1 (needs
+  srcintf/dstintf which aren't stored as DiffSync attrs).
+- NATPolicy — no-op container
+- NATPolicyRule — **UPDATE + DELETE only** via VIP partial-update.
+  Create is v2.1 (full VIP reconstruction needs extintf).
 
 **Name un-mangling:** Nautobot stores names as
 ``<hostname>__<vdom>__<original>``; FortiOS needs the *original* name.
@@ -28,6 +31,10 @@ from typing import Any
 from nautobot_ssot_fortinet.diffsync.models.firewall import (
     AddressObject,
     AddressObjectGroup,
+    NATPolicy,
+    NATPolicyRule,
+    Policy,
+    PolicyRule,
     ServiceObject,
     ServiceObjectGroup,
 )
@@ -296,6 +303,267 @@ class FortiGateServiceObjectGroup(ServiceObjectGroup):
             self.adapter.job.logger.info(f"  - deleted service group from FortiGate: {original!r}")
         super().delete()
         return self
+
+
+# ---- Policy + PolicyRule --------------------------------------------------
+
+
+# Inverse of FORTIOS_ACTION_MAP: Nautobot action → FortiOS action.
+NAUTOBOT_ACTION_TO_FORTIOS: dict[str, str] = {
+    "allow": "accept",
+    "deny": "deny",
+    "drop": "deny",  # firewall-models distinguishes; FortiOS rolls drop into deny
+    "remark": "deny",  # remark = informational; closest FortiOS semantic is deny+no-log
+}
+
+
+class FortiGatePolicy(Policy):
+    """Policy container — no-op on push.
+
+    The FortiGate has no "Policy" concept; rules are pushed individually
+    via ``FortiGatePolicyRule``. This subclass exists so that DiffSync's
+    iteration doesn't trip on the policy_rule's parent reference.
+    """
+
+    @classmethod
+    def create(cls, adapter, ids: dict[str, Any], attrs: dict[str, Any]):
+        return super().create(adapter, ids, attrs)
+
+    def update(self, attrs: dict[str, Any]):
+        return super().update(attrs)
+
+    def delete(self):
+        return super().delete()
+
+
+class FortiGatePolicyRule(PolicyRule):
+    """Push PolicyRule UPDATEs back to FortiGate.
+
+    **Scope (v2.0):** UPDATE + DELETE only. Create is deferred to v2.1
+    because FortiOS requires ``srcintf``/``dstintf`` on policy create, but
+    those aren't stored as structured DiffSync attrs (they live in the
+    rule's description for diagnostic purposes only).
+
+    The update path is the **common operator workflow**: pull a policy
+    into Nautobot, edit its allowed addresses/services/action/log in the
+    Nautobot UI, push the change back. The FortiGate's existing
+    srcintf/dstintf are preserved because we only update the fields we
+    explicitly send.
+
+    The DiffSync ``name`` is mangled as ``<host>__<vdom>__rule_<policyid>``;
+    the FortiOS uid is the integer ``policyid`` (parsed from the suffix).
+    """
+
+    @classmethod
+    def create(cls, adapter, ids: dict[str, Any], attrs: dict[str, Any]):
+        """No-op — PolicyRule create deferred to v2.1 (needs srcintf/dstintf scope)."""
+        if adapter.job:
+            adapter.job.logger.warning(
+                f"Skipping create of PolicyRule {ids['name']!r}: requires "
+                f"srcintf/dstintf which aren't yet stored as DiffSync attrs. "
+                f"Create the policy on the FortiGate UI first, then pull."
+            )
+        return super().create(adapter, ids, attrs)
+
+    def update(self, attrs: dict[str, Any]):
+        """PUT a partial policy update — only the fields the operator changed."""
+        policyid = _parse_policyid(self.name)
+        if policyid is None:
+            if self.adapter.job:
+                self.adapter.job.logger.warning(f"Cannot derive policyid from {self.name!r}; skipping update")
+            return super().update(attrs)
+
+        payload: dict[str, Any] = {}
+        if "action" in attrs:
+            payload["action"] = NAUTOBOT_ACTION_TO_FORTIOS.get(attrs["action"], "deny")
+        if "log" in attrs:
+            payload["logtraffic"] = "all" if attrs["log"] else "disable"
+        if "source_addresses" in attrs or "source_address_groups" in attrs:
+            payload["srcaddr"] = _addr_members(
+                attrs.get("source_addresses", self.source_addresses),
+                attrs.get("source_address_groups", self.source_address_groups),
+                self.adapter.hostname,
+                self.adapter.vdom,
+            )
+        if "destination_addresses" in attrs or "destination_address_groups" in attrs:
+            payload["dstaddr"] = _addr_members(
+                attrs.get("destination_addresses", self.destination_addresses),
+                attrs.get("destination_address_groups", self.destination_address_groups),
+                self.adapter.hostname,
+                self.adapter.vdom,
+            )
+        if "destination_services" in attrs or "destination_service_groups" in attrs:
+            payload["service"] = _svc_members(
+                attrs.get("destination_services", self.destination_services),
+                attrs.get("destination_service_groups", self.destination_service_groups),
+                self.adapter.hostname,
+                self.adapter.vdom,
+            )
+
+        if not payload:
+            return super().update(attrs)
+
+        self.adapter.client.cmdb.firewall.policy.update(uid=str(policyid), data=payload)
+        if self.adapter.job:
+            self.adapter.job.logger.info(f"  ~ updated policy {policyid} on FortiGate: {sorted(payload)}")
+        return super().update(attrs)
+
+    def delete(self):
+        """DELETE the policy by policyid."""
+        policyid = _parse_policyid(self.name)
+        if policyid is None:
+            return super().delete()
+        self.adapter.client.cmdb.firewall.policy.delete(uid=str(policyid))
+        if self.adapter.job:
+            self.adapter.job.logger.info(f"  - deleted policy {policyid} from FortiGate")
+        super().delete()
+        return self
+
+
+def _parse_policyid(mangled_rule_name: str) -> int | None:
+    """Extract the integer FortiOS policyid from a mangled rule name.
+
+    Mangled form: ``<host>__<vdom>__rule_<N>``.
+
+    >>> _parse_policyid("fgt-edge1__root__rule_42")
+    42
+    >>> _parse_policyid("fgt-edge1__root__not_a_rule")  # returns None
+    """
+    if "__rule_" not in mangled_rule_name:
+        return None
+    suffix = mangled_rule_name.rsplit("__rule_", 1)[-1]
+    try:
+        return int(suffix)
+    except ValueError:
+        return None
+
+
+def _addr_members(leaf_names: list, group_names: list, hostname: str, vdom: str) -> list:
+    """Build the FortiOS ``member`` list for a policy's srcaddr/dstaddr."""
+    out = [{"name": _unmangle(n, hostname, vdom)} for n in (list(leaf_names) + list(group_names))]
+    return out
+
+
+def _svc_members(svc_nks: list, svc_group_names: list, hostname: str, vdom: str) -> list:
+    """Build the FortiOS ``service`` member list for a policy.
+
+    ServiceObjects don't get name-mangled (composite NK), so we use the
+    name directly. Service groups DO get mangled.
+    """
+    out = []
+    for nk in svc_nks:
+        # nk is (ip_protocol, port, name)
+        out.append({"name": nk[2]})
+    for grp_name in svc_group_names:
+        out.append({"name": _unmangle(grp_name, hostname, vdom)})
+    return out
+
+
+# ---- NATPolicy + NATPolicyRule (VIP reconstruction) ----------------------
+
+
+class FortiGateNATPolicy(NATPolicy):
+    """NATPolicy container — no-op on push (FortiOS has no NATPolicy concept)."""
+
+    @classmethod
+    def create(cls, adapter, ids: dict[str, Any], attrs: dict[str, Any]):
+        return super().create(adapter, ids, attrs)
+
+    def update(self, attrs: dict[str, Any]):
+        return super().update(attrs)
+
+    def delete(self):
+        return super().delete()
+
+
+class FortiGateNATPolicyRule(NATPolicyRule):
+    """Push NATPolicyRule UPDATEs/DELETEs back to FortiGate as VIPs.
+
+    **Scope (v2.0):** UPDATE + DELETE. Create is deferred to v2.1 (full
+    VIP reconstruction from scratch requires the operator to specify
+    extintf, which isn't stored as a DiffSync attr).
+
+    The mangled DiffSync name is ``<host>__<vdom>__nat_rule_<vipname>``;
+    the FortiOS uid is the VIP name (un-mangled from the suffix). The
+    update path can change the mapped IP, ports (if portforward), and
+    description without touching extintf.
+    """
+
+    @classmethod
+    def create(cls, adapter, ids: dict[str, Any], attrs: dict[str, Any]):
+        """No-op — NATPolicyRule create deferred to v2.1 (needs extintf scope)."""
+        if adapter.job:
+            adapter.job.logger.warning(
+                f"Skipping create of NATPolicyRule {ids['name']!r}: full VIP "
+                f"reconstruction requires extintf which isn't yet stored as a "
+                f"DiffSync attr. Create the VIP on the FortiGate UI first, "
+                f"then pull."
+            )
+        return super().create(adapter, ids, attrs)
+
+    def update(self, attrs: dict[str, Any]):
+        """PUT a partial VIP update — mapped IP and ports only."""
+        vip_name = self.name.rsplit("__nat_rule_", 1)[-1]
+        if vip_name == self.name:  # no separator found
+            return super().update(attrs)
+
+        payload: dict[str, Any] = {}
+
+        # Translated destination → FortiOS mappedip (single-IP range).
+        if "translated_destination_addresses" in attrs:
+            mapped_addrs = attrs["translated_destination_addresses"]
+            if mapped_addrs:
+                # Look up the synthesized address record to get its actual value.
+                ip = _lookup_synth_addr_value(self.adapter, mapped_addrs[0])
+                if ip:
+                    payload["mappedip"] = [{"range": ip}]
+
+        # Translated destination service → FortiOS mappedport (port forward).
+        if "translated_destination_services" in attrs:
+            svcs = attrs["translated_destination_services"]
+            if svcs:
+                # nk is (ip_protocol, port, name)
+                payload["mappedport"] = svcs[0][1]
+
+        if "original_destination_services" in attrs:
+            svcs = attrs["original_destination_services"]
+            if svcs:
+                payload["extport"] = svcs[0][1]
+                payload["protocol"] = svcs[0][0].lower()  # FortiOS lowercases
+                payload["portforward"] = "enable"
+
+        if not payload:
+            return super().update(attrs)
+
+        self.adapter.client.cmdb.firewall.vip.update(uid=vip_name, data=payload)
+        if self.adapter.job:
+            self.adapter.job.logger.info(f"  ~ updated VIP {vip_name!r} on FortiGate: {sorted(payload)}")
+        return super().update(attrs)
+
+    def delete(self):
+        """DELETE the VIP from FortiGate."""
+        vip_name = self.name.rsplit("__nat_rule_", 1)[-1]
+        if vip_name == self.name:
+            return super().delete()
+        self.adapter.client.cmdb.firewall.vip.delete(uid=vip_name)
+        if self.adapter.job:
+            self.adapter.job.logger.info(f"  - deleted VIP {vip_name!r} from FortiGate")
+        super().delete()
+        return self
+
+
+def _lookup_synth_addr_value(adapter, mangled_name: str) -> str | None:
+    """For a synthesized vip_<x>_mapped AddressObject in our store, return its IP value.
+
+    The push-side adapter's load() includes AddressObjects, so the
+    synthesized records pulled into the store carry their resolved IP
+    value as the DiffSync ``value`` attr.
+    """
+    try:
+        addr = adapter.get(adapter.address_object, mangled_name)
+    except Exception:  # noqa: BLE001 — ObjectNotFound or anything
+        return None
+    return addr.value or None
 
 
 # ---- Helpers --------------------------------------------------------------

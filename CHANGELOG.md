@@ -3,6 +3,54 @@
 This project uses [CalVer](https://calver.org/) — versions are `YYYY.MM.DD`
 representing the date of release. Same-day fixes use `YYYY.MM.DD.N`.
 
+## 2026.05.18.1 — Wireless push + policy/NAT push (UPDATE/DELETE)
+
+Same-day follow-up to v1.0 — extends the push direction across wireless,
+policy, and NAT. **5 Jobs registered now**, with the new
+**"Nautobot → FortiGate (wireless)"** appearing alongside the existing four.
+
+### Added
+
+- **Wireless push Job: `Nautobot → FortiGate (wireless)`** — pushes
+  Nautobot wireless config to a FortiGate.
+  - `WirelessNetwork` (VAP) — full create/update/delete via
+    `cmdb/wireless-controller/vap`. SSID, security mode, broadcast,
+    enabled, description all round-trip.
+  - `RadioProfile` — **update-only** via partial wtp-profile updates
+    (`wtp-profile.radio-N` payload). Parent wtp-profile must exist on
+    the device; create of a single radio isn't well-defined.
+- **Policy push** in the existing firewall push Job — `PolicyRule`
+  update + delete. Operators can edit a policy's allowed
+  addresses/services/action/log in Nautobot's UI and push the change
+  back to the FortiGate. The `policyid` is parsed from the mangled name
+  suffix (`<host>__<vdom>__rule_<N>`).
+- **NAT push** — `NATPolicyRule` update + delete via FortiOS VIP
+  partial-update + delete. The push resolves the synthesized
+  `vip_*_mapped` AddressObject back to its IP value for the
+  `mappedip[].range` payload.
+
+### Mapping additions
+
+- Inverse `NAUTOBOT_AUTH_TO_FORTIOS_SECURITY` table — Nautobot
+  WirelessNetworkAuthenticationChoices → FortiOS `vap.security` value.
+  When multiple FortiOS values map to one Nautobot choice (e.g.
+  `wpa-personal` and `wpa2-only-personal` both → `WPA2 Personal`), we
+  pick the most-modern form on push.
+- Inverse `NAUTOBOT_ACTION_TO_FORTIOS` table — handles the asymmetry
+  where firewall-models distinguishes `drop` from `deny` but FortiOS
+  rolls them together.
+
+### Deferred to v2.1
+
+- **PolicyRule create from scratch** — requires `srcintf`/`dstintf` which
+  aren't yet stored as structured DiffSync attrs (they live in the
+  rule's description for diagnostic purposes only). Operators must
+  create the policy on the FortiGate UI first, then pull into Nautobot.
+- **NATPolicyRule (VIP) create from scratch** — same `extintf` issue.
+- **wtp-profile create from a single RadioProfile** — needs the full
+  multi-radio + platform-mode context we don't have at the RadioProfile
+  level.
+
 ## 2026.05.18 — v1.0
 
 First release. Bidirectional Nautobot ↔ FortiGate sync, live-validated
