@@ -562,6 +562,79 @@ def fortios_band_to_frequency(band: str) -> str | None:
     return None
 
 
+def fortios_interface_ip_to_cidr(ip_field: str) -> str:
+    """Convert a FortiOS interface ``ip`` field to host CIDR (preserves host IP).
+
+    Different from :func:`fortios_subnet_to_cidr` which collapses to the
+    network form — that's right for ``firewall.address`` records (where
+    FortiOS stores the *network*) but wrong for ``system.interface.ip``
+    records (where FortiOS stores *this host's IP within the network*).
+
+    >>> fortios_interface_ip_to_cidr("203.0.113.10 255.255.255.0")
+    '203.0.113.10/24'
+    >>> fortios_interface_ip_to_cidr("10.0.0.1 255.255.255.0")
+    '10.0.0.1/24'
+    >>> fortios_interface_ip_to_cidr("1.2.3.4 255.255.255.255")
+    '1.2.3.4/32'
+
+    Raises:
+        ValueError: if the input isn't IPv4 dotted-host + dotted-mask.
+
+    """
+    parts = ip_field.strip().split()
+    if len(parts) != 2:
+        raise ValueError(f"expected 'address mask' format, got: {ip_field!r}")
+    host, mask = parts
+    # Convert dotted-decimal mask to prefix length
+    try:
+        mask_int = sum(bin(int(octet)).count("1") for octet in mask.split("."))
+    except (ValueError, TypeError) as e:
+        raise ValueError(f"invalid mask {mask!r}: {e}") from e
+    # Validate host is a parseable IPv4 — raises ValueError for bad input
+    ipaddress.IPv4Address(host)
+    return f"{host}/{mask_int}"
+
+
+def fortios_interface_type_to_nautobot(ftype: str) -> str | None:
+    """Map FortiOS ``system.interface.type`` → Nautobot ``dcim.InterfaceType``.
+
+    Returns ``None`` for FortiOS types we deliberately skip in v3.0 (vap-switch,
+    tunnel, vlan) — callers should drop those records.
+
+    Nautobot ``InterfaceTypeChoices`` values used here:
+
+    - ``"1000base-t"`` for physical ports — FortiGate models we care about
+      use copper gig-E for most ports; 10G ports exist on larger units
+      (FG-100F+) but Nautobot doesn't need exact speed for inventory
+      purposes. Could be refined per-DeviceType in a future release.
+    - ``"lag"`` for aggregate / hardware-switch / soft-switch interfaces
+      (anything that groups other interfaces logically).
+    - ``"virtual"`` for everything else that lands in Nautobot.
+
+    >>> fortios_interface_type_to_nautobot("physical")
+    '1000base-t'
+    >>> fortios_interface_type_to_nautobot("aggregate")
+    'lag'
+    >>> fortios_interface_type_to_nautobot("hard-switch")
+    'lag'
+    >>> fortios_interface_type_to_nautobot("vap-switch")  # skipped — already synced as WirelessNetwork
+
+    """
+    return _FORTIOS_INTERFACE_TYPE_MAP.get(ftype)
+
+
+_FORTIOS_INTERFACE_TYPE_MAP = {
+    "physical": "1000base-t",
+    "aggregate": "lag",
+    "hard-switch": "lag",
+    "switch": "lag",
+    # Skipped in v3.0 — return None so callers drop the record:
+    "vap-switch": None,  # already represented via WirelessNetwork sync
+    "vlan": None,  # mostly auto-created quarantine interfaces; defer
+    "tunnel": None,  # VPN-specific; defer to VPN-focused release
+}
+
+
 def split_policy_members(
     fortios_member_list: list[dict],
     leaf_names: set[str],

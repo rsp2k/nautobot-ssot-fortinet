@@ -3,6 +3,100 @@
 This project uses [CalVer](https://calver.org/) — versions are `YYYY.MM.DD`
 representing the date of release. Same-day fixes use `YYYY.MM.DD.N`.
 
+## 2026.05.18.11 — Device + Interface sync (v3.0)
+
+The first new capability since the v2.x stability work. **The FortiGate
+now appears as a Nautobot `dcim.Device`** with its operator-meaningful
+interfaces and IP assignments synced from `system.interface`.
+
+### New Job
+
+`FortiGate -> Nautobot (device + interfaces)` (5th DataSource Job,
+6 total Jobs registered).
+
+Form vars (all required except delete-flag):
+- **External integration** (ObjectVar) — picks the FortiGate
+- **Vdom** (StringVar, default "root") — scope
+- **Device type** (ObjectVar) — Nautobot DeviceType, e.g. "FortiWiFi-61E"
+- **Role** (ObjectVar) — Nautobot Role, e.g. "Firewall"
+- **Location** (ObjectVar) — Nautobot Location
+- **Status** (ObjectVar) — Nautobot Status, typically "Active"
+- **Delete records missing from source** (BooleanVar, default False)
+
+Operators must pre-create the DeviceType / Role / Location / Status
+records (Nautobot best practice — same pattern the wireless AP sync
+uses for `ap_device_type` / `ap_role` / `ap_location`).
+
+### What gets synced
+
+| FortiOS type | → Nautobot | Notes |
+|---|---|---|
+| `physical` interfaces | `dcim.Interface` type=`1000base-t` | The actual hardware ports (wan1, internal1-7, dmz, modem, etc.) |
+| `aggregate` interfaces | `dcim.Interface` type=`lag` | e.g. `fortilink` |
+| `hard-switch` interfaces | `dcim.Interface` type=`lag` | the switch parent (e.g. `internal` on FortiWiFi-61E) |
+| `switch` interfaces | `dcim.Interface` type=`lag` | soft switches (e.g. `lan`) |
+| Interface IPs | `ipam.IPAddress` + auto-created parent `ipam.Prefix` | host IPs assigned via `interface.ip_addresses` |
+
+### What's deliberately skipped
+
+| FortiOS type | Reason |
+|---|---|
+| `vap-switch` | Already represented via `WirelessNetwork` sync (v2.0+) |
+| `vlan` (e.g. `wqtn.X.Y`) | Mostly auto-created quarantine artifacts; defer to v3.1 |
+| `tunnel` | VPN-specific; defer to a VPN-focused release |
+
+### Read-only in v3.0 — no push direction
+
+Wrong IP on a FortiGate interface can disconnect the appliance. Push
+direction (Nautobot → FortiGate) for device/interface config requires
+explicit operator opt-in plus pre-validation; tracked for v3.1+.
+
+### New helper: `fortios_interface_ip_to_cidr`
+
+The FortiOS dotted-mask format `"203.0.113.99 255.255.255.0"` means
+different things in different contexts:
+- In `firewall.address.subnet`, it's the *network* the AddressObject
+  represents → `fortios_subnet_to_cidr()` collapses to `203.0.113.0/24`
+- In `system.interface.ip`, it's *this interface's host IP* → the new
+  `fortios_interface_ip_to_cidr()` preserves the host: `203.0.113.99/24`
+
+Caught during v3.0 live validation — first sync produced phantom
+network addresses, fix produced correct host IPs.
+
+### Live-validated end-to-end
+
+Pull against the dev FortiWiFi-61E synced:
+- 1 Device (`fgt-dev`, type=FortiWiFi-61E, role=Firewall, location=Lab)
+- 15 Interfaces (10 physical + 4 aggregate/switch/hard-switch + 1 disabled `modem`)
+- 4 Interfaces with IPs (`dmz`, `fortilink`, `lan`, `wqt.root`)
+
+Idempotency confirmed: second sync produced `{'create': 0, 'update': 0,
+'delete': 0, 'no-change': 16, 'skip': 0}` — clean round-trip.
+
+### Known minor issue (deferred to v3.1)
+
+Device.serial is currently empty — the FortiOS serial-extraction path
+tried in `_get_fortios_serial()` doesn't quite work with fortigate-api
+2.0.8's response envelope handling. Not blocking; the Device exists
+and all its interfaces sync correctly. Operators who want the serial
+populated can edit the Device manually until v3.1 fixes the extraction.
+
+### Upgrade from v2026.05.18.10
+
+```bash
+pip install --upgrade nautobot-ssot-fortinet
+nautobot-server collectstatic --no-input
+sudo systemctl restart nautobot nautobot-worker
+```
+
+Enable the new Job at **Extensibility → Jobs → "FortiGate → Nautobot
+(device + interfaces)"** → click pencil → check Enabled. Then run with
+the same ExternalIntegration you use for firewall/wireless sync, plus
+the required Nautobot scoping references.
+
+No schema migration. Existing Jobs (firewall pull/push, wireless
+pull/push, live status) are unchanged.
+
 ## 2026.05.18.10 — v2.9 regression guard: Job.run() lifecycle test (v2.9)
 
 Closes the test gap that allowed v2.9's bug to exist for 8 releases.

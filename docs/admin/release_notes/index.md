@@ -4,6 +4,7 @@ Per-release notes for `nautobot-ssot-fortinet`. The project uses [CalVer](https:
 
 ## Versions
 
+- [v2026.05.18.11](version_2026.05.18.11.md) — **Device + Interface sync (v3.0).** The FortiGate now appears as a Nautobot Device with its interfaces + IP assignments. New 5th DataSource Job.
 - [v2026.05.18.10](version_2026.05.18.10.md) — Regression guard for v2.9. New integration test exercises Job.run() lifecycle; would have caught the v2.9 bug. No production-code changes.
 - [v2026.05.18.9](version_2026.05.18.9.md) — **URGENT HOTFIX.** Job.run() instance-attr capture. Every prior version (v1.0–v2.8) crashed on first UI Job run. Upgrade immediately if affected.
 - [v2026.05.18.8](version_2026.05.18.8.md) — Docs screenshots + dev-stack DNS modernization. No production-code changes.

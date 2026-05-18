@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 
 from nautobot.apps.jobs import BooleanVar, Job, ObjectVar, StringVar, register_jobs
 from nautobot.dcim.models import DeviceType, Location
-from nautobot.extras.models import ExternalIntegration, Role
+from nautobot.extras.models import ExternalIntegration, Role, Status
 from nautobot_ssot.jobs.base import DataSource, DataTarget
 
 from nautobot_ssot_fortinet.clients.fortigate import build_client
@@ -619,11 +619,133 @@ class FortiGateWirelessDataTarget(DataTarget):
             super().execute_sync()
 
 
+class FortiGateDevicesDataSource(DataSource):
+    """Pull the FortiGate as a Nautobot Device with its interfaces (v3.0+).
+
+    Read-only sync. Creates / updates:
+
+    - One ``dcim.Device`` for the FortiGate itself, scoped by the
+      operator-supplied DeviceType, Role, Location, and Status
+    - One ``dcim.Interface`` per FortiOS physical / hard-switch / switch /
+      aggregate interface in the selected VDOM
+    - One ``ipam.IPAddress`` per assigned interface IP, attached via
+      ``interface.ip_addresses``
+
+    Skipped interface types (v3.0):
+      - ``vap-switch`` — already covered by the wireless sync
+      - ``vlan`` — mostly auto-created quarantine artifacts; defer
+      - ``tunnel`` — VPN-specific, defer to VPN-focused release
+
+    No push direction in v3.0 — wrong-IP on a FortiGate interface
+    can disconnect the appliance, so the read-write equivalent will
+    require explicit operator opt-in plus pre-validation. Tracked
+    for v3.1+.
+    """
+
+    external_integration = ObjectVar(
+        model=ExternalIntegration,
+        description=(
+            "FortiGate to sync from. Must have a SecretsGroup with the "
+            "REST API token (or username + password fallback)."
+        ),
+    )
+    vdom = StringVar(
+        default="root",
+        description="FortiOS Virtual Domain to sync interfaces from. Defaults to 'root'.",
+    )
+    device_type = ObjectVar(
+        model=DeviceType,
+        description=("Nautobot DeviceType for the FortiGate appliance (e.g. 'FortiWiFi-61E'). Must already exist."),
+    )
+    role = ObjectVar(
+        model=Role,
+        description="Nautobot Role for the synced Device (e.g. 'Firewall'). Must already exist.",
+    )
+    location = ObjectVar(
+        model=Location,
+        description="Nautobot Location for the synced Device. Must already exist.",
+    )
+    status = ObjectVar(
+        model=Status,
+        description="Nautobot Status for the synced Device (typically 'Active').",
+    )
+    delete_records_missing_from_source = BooleanVar(
+        default=False,
+        description=(
+            "If True, delete Nautobot Interface records that no longer exist "
+            "on the FortiGate. If False (default), only create/update — leave "
+            "orphan records alone."
+        ),
+    )
+
+    class Meta:
+        """Job metadata."""
+
+        name = "FortiGate -> Nautobot (device + interfaces)"
+        data_source = "FortiGate"
+        description = (
+            "Pull the FortiGate as a Nautobot Device with its physical, "
+            "hard-switch, switch, and aggregate interfaces (including IP "
+            "assignments). Read-only — push direction deferred to v3.1+."
+        )
+
+    def run(self, *args, **kwargs):  # type: ignore[override]
+        """Capture form kwargs as instance attrs, then run base sync (v2.9 pattern)."""
+        self.external_integration = kwargs["external_integration"]
+        self.vdom = kwargs["vdom"]
+        self.device_type = kwargs["device_type"]
+        self.role = kwargs["role"]
+        self.location = kwargs["location"]
+        self.status = kwargs["status"]
+        self.delete_records_missing_from_source = kwargs["delete_records_missing_from_source"]
+        super().run(*args, **kwargs)
+
+    def load_source_adapter(self) -> None:
+        """Build the FortiGate adapter, load device + interface state."""
+        from nautobot_ssot_fortinet.diffsync.adapters.fortigate_devices import (
+            FortiGateDevicesAdapter,
+        )
+
+        self.logger.info(f"Connecting to FortiGate via ExternalIntegration {self.external_integration.name!r}...")
+        with build_client(self.external_integration) as client:
+            self.source_adapter = FortiGateDevicesAdapter(
+                client=client,
+                hostname=self.external_integration.name,
+                vdom=self.vdom,
+                device_type_model=self.device_type.model,
+                role_name=self.role.name,
+                location_name=self.location.name,
+                status_name=self.status.name,
+                job=self,
+                sync=self.sync,
+            )
+            self.source_adapter.load()
+
+    def load_target_adapter(self) -> None:
+        """Read existing Nautobot Device + Interface state for the target FortiGate."""
+        from nautobot_ssot_fortinet.diffsync.adapters.nautobot_devices import (
+            NautobotDevicesAdapter,
+        )
+
+        self.target_adapter = NautobotDevicesAdapter(
+            hostname=self.external_integration.name,
+            vdom=self.vdom,
+            device_type_model=self.device_type.model,
+            role_name=self.role.name,
+            location_name=self.location.name,
+            status_name=self.status.name,
+            job=self,
+            sync=self.sync,
+        )
+        self.target_adapter.load()
+
+
 jobs = [
     FortiGateFirewallDataSource,
     FortiGateWirelessDataSource,
     FortiGateLiveStatus,
     FortiGateFirewallDataTarget,
     FortiGateWirelessDataTarget,
+    FortiGateDevicesDataSource,
 ]
 register_jobs(*jobs)
