@@ -339,3 +339,17 @@ class TestNATPolicyAndVIPLoad:
     def test_nat_rule_parent_link(self, adapter):
         for r in adapter.get_all("nat_policy_rule"):
             assert r.nat_policy_name == "fgt-edge1__root__nat_policy"
+
+    def test_v26_resolved_extip_mappedip_fingerprints(self, adapter):
+        # v2.6+: resolved_extip / resolved_mappedip carry the actual IP
+        # values from FortiOS extip/mappedip — so a value-only change
+        # (operator edits the synth address's IP without renaming it)
+        # shows up as a rule diff and triggers vip.update() on push.
+        # Pre-v2.6 this was a silent dead-end.
+        r = adapter.get("nat_policy_rule", "fgt-edge1__root__nat_rule_WEB_DNAT")
+        assert r.resolved_extip == "203.0.113.5"
+        assert r.resolved_mappedip == "10.0.10.5"
+
+        # Range mappedip also populates the fingerprint
+        r2 = adapter.get("nat_policy_rule", "fgt-edge1__root__nat_rule_RANGE_NAT")
+        assert r2.resolved_mappedip == "10.0.30.10-10.0.30.20"

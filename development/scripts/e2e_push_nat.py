@@ -55,9 +55,10 @@ def _cleanup() -> None:
     # Parent NATPolicy first (protect_on_delete)
     n_np = NATPolicy.objects.filter(name=TEST_NAT_POLICY).delete()
     n_npr = NATPolicyRule.objects.filter(name=TEST_RULE_NAME).delete()
-    # Also catches the v2 address from the update test
-    mapped_v2 = f"{EXT_NAME}__{VDOM}__vip_{TEST_VIP}_mapped_v2"
-    n_a = AddressObject.objects.filter(name__in=[TEST_EXT_ADDR, TEST_MAPPED_ADDR, mapped_v2]).delete()
+    # v2.6: edit-value test reuses the same AddressObject — no _mapped_v2
+    # to clean up. (The _v2 cleanup is kept harmless via the v2 IP filter
+    # below in case any leftover test data exists from prior runs.)
+    n_a = AddressObject.objects.filter(name__in=[TEST_EXT_ADDR, TEST_MAPPED_ADDR]).delete()
     # IPAddress objects (catch our test IPs, including the v2 update IP)
     n_ip = IPAddress.objects.filter(host__in=[TEST_EXT_IP, TEST_MAPPED_IP, TEST_MAPPED_IP_V2]).delete()
     # Prefixes are shared infra — leave them alone
@@ -238,14 +239,13 @@ def run() -> None:
         return
     print("    ✓ VIP present with correct extip + mappedip")
 
-    print(f"\n[3/5] Update mappedip {TEST_MAPPED_IP} → {TEST_MAPPED_IP_V2} via NEW AddressObject pointer change...")
-    # The architecturally-clean way to change a VIP's mappedip is to
-    # point the rule's translated_destination_addresses M2M at a DIFFERENT
-    # AddressObject record (not edit the value of the existing one).
-    # Changing the existing record's IPAddress FK doesn't propagate
-    # because the rule's M2M still references the same record by name —
-    # NATPolicyRule.update() only fires when the M2M list changes.
-    # (Known v2.5 design question: should we re-resolve on every push?)
+    print(f"\n[3/5] Update mappedip {TEST_MAPPED_IP} → {TEST_MAPPED_IP_V2} via EDIT-VALUE on existing AddressObject...")
+    # v2.6+: the rule's resolved_mappedip DiffSync attr fingerprints the
+    # ACTUAL IP value (not just the M2M record name). Editing the IP on
+    # the existing synth address now produces a rule-level diff →
+    # NATPolicyRule.update() fires → vip.update() propagates to FortiOS.
+    # Pre-v2.6 this scenario was a known dead-end (operators had to
+    # replace the AddressObject reference).
     from nautobot.extras.models import Status
     from nautobot.ipam.models import IPAddress, Namespace, Prefix
     from nautobot_firewall_models.models import AddressObject
@@ -259,14 +259,10 @@ def run() -> None:
         host=TEST_MAPPED_IP_V2,
         defaults={"status": active, "mask_length": 32, "parent": mapped_pfx_v2},
     )
-    # Create a SECOND synth address with a different name → forces M2M change
-    mapped_addr_v2_name = f"{EXT_NAME}__{VDOM}__vip_{TEST_VIP}_mapped_v2"
-    mapped_addr_v2, _ = AddressObject.objects.get_or_create(
-        name=mapped_addr_v2_name,
-        defaults={"ip_address": mapped_ip2, "status": active, "description": f"VIP {TEST_VIP} mapped IP v2"},
-    )
-    rule.translated_destination_addresses.set([mapped_addr_v2])
-    rule.save()
+    # Edit the EXISTING mapped AddressObject (don't create a new one)
+    mapped_addr = AddressObject.objects.get(name=TEST_MAPPED_ADDR)
+    mapped_addr.ip_address = mapped_ip2
+    mapped_addr.save()
     if not _push():
         _cleanup()
         return

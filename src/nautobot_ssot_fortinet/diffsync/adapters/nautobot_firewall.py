@@ -258,8 +258,10 @@ class NautobotFirewallAdapter(Adapter):
                 )
             )
             for orm_rule in orm_policy.nat_policy_rules.all():
-                orig_dst_addrs = sorted(o.name for o in orm_rule.original_destination_addresses.all())
-                xlat_dst_addrs = sorted(o.name for o in orm_rule.translated_destination_addresses.all())
+                orig_dst_addr_objs = list(orm_rule.original_destination_addresses.all())
+                xlat_dst_addr_objs = list(orm_rule.translated_destination_addresses.all())
+                orig_dst_addrs = sorted(o.name for o in orig_dst_addr_objs)
+                xlat_dst_addrs = sorted(o.name for o in xlat_dst_addr_objs)
                 orig_dst_svcs = sorted(
                     (s.ip_protocol, s.port or "", s.name) for s in orm_rule.original_destination_services.all()
                 )
@@ -271,6 +273,12 @@ class NautobotFirewallAdapter(Adapter):
                 # v2.1+: parse [extintf=X] back out of description
                 extintf_list = parse_intf_annotation(orm_rule.description or "", "extintf")
                 external_interface = extintf_list[0] if extintf_list else ""
+                # v2.6+: resolve the actual IP values for diff fingerprinting.
+                # FortiOS VIPs store extip/mappedip literally, so a value
+                # change on the synth address needs to show up at the rule
+                # level — including these in the diff makes that happen.
+                resolved_extip = _first_addr_value(orig_dst_addr_objs)
+                resolved_mappedip = _first_addr_value(xlat_dst_addr_objs)
                 self.add(
                     self.nat_policy_rule(
                         name=orm_rule.name,
@@ -282,6 +290,8 @@ class NautobotFirewallAdapter(Adapter):
                         translated_destination_addresses=xlat_dst_addrs,
                         original_destination_services=orig_dst_svcs,
                         translated_destination_services=xlat_dst_svcs,
+                        resolved_extip=resolved_extip,
+                        resolved_mappedip=resolved_mappedip,
                         external_interface=external_interface,
                         vdom=self.vdom,
                         hostname=self.hostname,
@@ -307,6 +317,30 @@ def _orm_address_value(orm_obj) -> tuple[str | None, str]:
         addr = orm_obj.ip_address
         return "ipaddress", str(addr.host)
     return None, ""
+
+
+def _first_addr_value(addr_objs: list) -> str:
+    """Resolve the first AddressObject in a list to its bare IP value.
+
+    Used to populate NATPolicyRule.resolved_extip / resolved_mappedip so
+    the DiffSync diff reflects value changes, not just M2M name changes.
+    Returns "" if the list is empty or the first object doesn't resolve
+    to a single IP (e.g., FQDN or iprange).
+    """
+    if not addr_objs:
+        return ""
+    addr_type, value = _orm_address_value(addr_objs[0])
+    # For ipmask /32 we strip the suffix so it matches the pull-side
+    # normalization to ipaddress/bare-IP done in v2.5.
+    if addr_type == "ipmask" and value.endswith("/32"):
+        return value.rsplit("/", 1)[0]
+    if addr_type in ("ipaddress", "iprange"):
+        return value
+    if addr_type == "ipmask":
+        # Subnet ranges /N where N < 32 — not what VIP extip/mappedip
+        # expect, but include the value so a change is still detected.
+        return value
+    return ""
 
 
 def _strip_prefix(s: str, prefix: str) -> str:

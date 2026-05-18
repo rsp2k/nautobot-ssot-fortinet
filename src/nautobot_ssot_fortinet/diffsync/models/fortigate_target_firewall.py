@@ -638,8 +638,29 @@ class FortiGateNATPolicyRule(NATPolicyRule):
 
         payload: dict[str, Any] = {}
 
+        # v2.6+: resolved_mappedip change → mappedip update.
+        # Two paths produce a mappedip change:
+        #   (a) the rule's translated_destination_addresses M2M pointed
+        #       at a different AddressObject (handled by name-list diff
+        #       below for backwards-compat),
+        #   (b) the existing AddressObject's IP value changed
+        #       (handled here via resolved_mappedip diff — new in v2.6).
+        # Path (b) was non-functional before v2.6 because the rule's
+        # name list didn't change, so no rule diff was raised.
+        if "resolved_mappedip" in attrs:
+            new_mapped = attrs["resolved_mappedip"]
+            if new_mapped:
+                payload["mappedip"] = [{"range": new_mapped}]
+
+        # v2.6+: resolved_extip change → extip update.
+        if "resolved_extip" in attrs:
+            new_ext = attrs["resolved_extip"]
+            if new_ext:
+                payload["extip"] = new_ext
+
         # Translated destination → FortiOS mappedip (single-IP range).
-        if "translated_destination_addresses" in attrs:
+        # M2M-name change path (pre-v2.6 behavior, still supported).
+        if "translated_destination_addresses" in attrs and "mappedip" not in payload:
             mapped_addrs = attrs["translated_destination_addresses"]
             if mapped_addrs:
                 # Look up the synthesized address record to get its actual value.

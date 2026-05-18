@@ -413,6 +413,11 @@ class FortiGateFirewallAdapter(Adapter):
                     translated_destination_addresses=[mapped_addr_name],
                     original_destination_services=sorted(orig_dst_svcs),
                     translated_destination_services=sorted(xlat_dst_svcs),
+                    # v2.6+: resolved IP fingerprints — FortiOS gave us these
+                    # values directly, no lookup needed. Source side resolves
+                    # via the ORM's AddressObject value attr.
+                    resolved_extip=extip,
+                    resolved_mappedip=mapped_value,
                     external_interface=extintf,
                     vdom=self.vdom,
                     hostname=self.hostname,

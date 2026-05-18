@@ -3,6 +3,81 @@
 This project uses [CalVer](https://calver.org/) — versions are `YYYY.MM.DD`
 representing the date of release. Same-day fixes use `YYYY.MM.DD.N`.
 
+## 2026.05.18.6 — NAT update propagates from address-value-change (v2.5)
+
+Closes the v2.5 deferred design question. Editing the IP of an existing
+`vip_*_mapped` or `vip_*_ext` AddressObject in Nautobot now propagates
+to the FortiGate's VIP record on push — operator workflow finally
+matches the obvious mental model.
+
+### What changed
+
+- **New `resolved_extip` + `resolved_mappedip` DiffSync attrs** on
+  `NATPolicyRule`. They carry the ACTUAL IP values that
+  `original_destination_addresses` / `translated_destination_addresses`
+  resolve to. Populated by both the FortiGate pull adapter (uses the
+  values directly from FortiOS extip/mappedip) and the Nautobot adapter
+  (resolves the first AddressObject in each M2M to its IP via
+  `_orm_address_value()`).
+- **Push side acts on `resolved_*` diffs.** `FortiGateNATPolicyRule.update()`
+  now POSTs `mappedip` / `extip` when the resolved-value fingerprint
+  changes (the v2.6 path) — in addition to the pre-v2.6 M2M-name-change
+  path which still works for backwards-compat.
+
+### Why this matters
+
+Pre-v2.6 operator workflow that didn't work:
+```
+1. UI: open vip_X_mapped AddressObject, change IP 10.0.0.50 → 10.0.0.99
+2. Push.
+3. FortiGate's VIP still shows mappedip 10.0.0.50.   ❌ silent failure
+```
+
+The rule's `translated_destination_addresses` M2M still pointed to the
+same record by name, so DiffSync saw no rule-level diff, so
+`NATPolicyRule.update()` never fired. Operators had to replace the
+AddressObject reference instead — not a natural workflow.
+
+Post-v2.6 the same operator workflow works:
+```
+1. UI: open vip_X_mapped AddressObject, change IP 10.0.0.50 → 10.0.0.99
+2. Push.
+3. FortiGate's VIP now shows mappedip 10.0.0.99.    ✓ live-verified on FWF-61E
+```
+
+### Live-validated
+
+Same `e2e_push_nat.py` script that was used to surface the v2.5 issue,
+now updated to use the edit-value workflow (`mapped_addr.ip_address =
+new_ip; mapped_addr.save()`). Passes end-to-end against FortiWiFi-61E
+(FortiOS 7.0.14).
+
+### Tests
+
+- **202 unit tests** (was 201 in v2.5). +1 covering
+  `resolved_extip` / `resolved_mappedip` fingerprint population on
+  the FortiGate pull adapter.
+
+### Why this isn't backwards-compatible breakage
+
+The new attrs are **additive** — existing M2M-name-change diffs still
+fire `update()` as before. The only behavior change is: previously-silent
+value-changes now produce a diff. Anyone whose workflow relied on
+"editing the address value doesn't trigger a push update" was operating
+against intent, not by design.
+
+### Upgrade from v2026.05.18.5
+
+```bash
+pip install --upgrade nautobot-ssot-fortinet
+nautobot-server collectstatic --no-input
+sudo systemctl restart nautobot nautobot-worker
+```
+
+No new Jobs. No schema changes. Re-running the pull Job once after
+upgrade is recommended (refreshes the new `resolved_*` attrs into
+Nautobot's view).
+
 ## 2026.05.18.5 — Policy + NAT push live-validated; round-trip stability (v2.4)
 
 Direct follow-up to the v2.4 hotfix retrospective. Policy and NAT push

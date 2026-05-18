@@ -249,6 +249,17 @@ class NATPolicyRule(DiffSyncModel):
         "translated_destination_addresses",
         "original_destination_services",
         "translated_destination_services",
+        # v2.6+: resolved-IP fingerprints. The *_addresses fields above
+        # carry NAMES of AddressObjects; these carry the actual IP VALUES
+        # those names resolve to. FortiOS VIPs store extip/mappedip
+        # literally (not by reference), so a value change without a name
+        # change still needs to propagate. Including resolved values in
+        # the DiffSync diff means "edit the IP on the synth address +
+        # push" updates the VIP — no operator workflow constraint.
+        # NOT leading-underscore: Pydantic v2 treats _name as private and
+        # excludes from diff comparison.
+        "resolved_extip",
+        "resolved_mappedip",
         "external_interface",
         "vdom",
         "hostname",
@@ -264,6 +275,8 @@ class NATPolicyRule(DiffSyncModel):
     translated_destination_addresses: list[str]
     original_destination_services: list[tuple[str, str, str]]
     translated_destination_services: list[tuple[str, str, str]]
+    resolved_extip: str = ""
+    resolved_mappedip: str = ""
     # FortiOS VIP `extintf` — the interface on which the external IP is
     # reachable. Empty string for "any" (FortiOS default).
     external_interface: str
