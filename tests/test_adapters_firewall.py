@@ -49,8 +49,8 @@ class TestAddressObjectLoad:
     def test_loads_supported_types_skips_unsupported(self, adapter):
         # Filter out VIP-synthesized addresses (those are covered by NAT tests).
         names = sorted(o.name for o in adapter.get_all("address_object") if "__vip_" not in o.name)
-        # all 5 supported (all, WEB_SERVERS, DB_HOST_1, VPN_POOL, salesforce.com)
-        # are present; GEO_RU and WILD_LAB skipped.
+        # v3.2+: GEO_RU, ipcam01, EMS_ALL_UNKNOWN_CLIENTS now load as
+        # placeholder FQDNs. Only WILD_LAB (wildcard type) is still skipped.
         assert names == sorted(
             [
                 "fgt-edge1__root__all",
@@ -58,6 +58,9 @@ class TestAddressObjectLoad:
                 "fgt-edge1__root__DB_HOST_1",
                 "fgt-edge1__root__VPN_POOL",
                 "fgt-edge1__root__salesforce.com",
+                "fgt-edge1__root__GEO_RU",
+                "fgt-edge1__root__ipcam01",
+                "fgt-edge1__root__EMS_ALL_UNKNOWN_CLIENTS",
             ]
         )
 
@@ -94,6 +97,27 @@ class TestAddressObjectLoad:
         assert vpn.value == "10.99.0.10-10.99.0.250"
         assert vpn.description == "Remote VPN clients"
 
+    def test_mac_loads_as_placeholder_fqdn_with_annotation(self, adapter):
+        """v3.2+: mac addresses become placeholder FQDNs under .fortios.invalid."""
+        cam = adapter.get("address_object", "fgt-edge1__root__ipcam01")
+        assert cam.address_type == "fqdn"
+        assert cam.value == "ipcam01.mac.fortios.invalid"
+        assert "FortiOS MAC: aa:bb:cc:dd:ee:01" in cam.description
+
+    def test_dynamic_loads_as_placeholder_fqdn(self, adapter):
+        """v3.2+: dynamic EMS addresses become placeholder FQDNs."""
+        ems = adapter.get("address_object", "fgt-edge1__root__EMS_ALL_UNKNOWN_CLIENTS")
+        assert ems.address_type == "fqdn"
+        assert ems.value == "ems-all-unknown-clients.dynamic.fortios.invalid"
+        assert "FortiOS dynamic EMS group" in ems.description
+
+    def test_geography_loads_as_placeholder_fqdn_with_country(self, adapter):
+        """v3.2+: geography addresses become placeholder FQDNs annotated with country code."""
+        geo = adapter.get("address_object", "fgt-edge1__root__GEO_RU")
+        assert geo.address_type == "fqdn"
+        assert geo.value == "geo-ru.geo.fortios.invalid"
+        assert "FortiOS geography: RU" in geo.description
+
 
 class TestAddressGroupLoad:
     def test_groups_loaded_with_mangled_members(self, adapter):
@@ -118,8 +142,20 @@ class TestServiceObjectLoad:
     def test_loads_all_services(self, adapter):
         # Filter out VIP-synthesized port-forward services (those have names
         # starting with "VIP_" and are covered by NAT tests).
+        # v3.2+: ALL and webproxy now load (mapped to HOPOPT) instead of being skipped.
         names = sorted(o.name for o in adapter.get_all("service_object") if not o.name.startswith("VIP_"))
-        assert names == sorted(["HTTP", "HTTPS", "DNS", "PING", "OSPF", "WEB_RANGE"])
+        assert names == sorted(["HTTP", "HTTPS", "DNS", "PING", "OSPF", "WEB_RANGE", "ALL", "webproxy"])
+
+    def test_ALL_service_loads_as_HOPOPT(self, adapter):
+        """v3.2+ — fixes the cascade where 80+ policies dropped 'ALL' refs."""
+        all_svc = adapter.get("service_object", {"ip_protocol": "HOPOPT", "port": "", "name": "ALL"})
+        assert all_svc.ip_protocol == "HOPOPT"
+        assert all_svc.port == ""
+
+    def test_webproxy_service_loads_as_HOPOPT(self, adapter):
+        """v3.2+ — FortiOS protocol=ALL no longer drops the service."""
+        proxy = adapter.get("service_object", {"ip_protocol": "HOPOPT", "port": "", "name": "webproxy"})
+        assert proxy.ip_protocol == "HOPOPT"
 
     def test_service_names_are_NOT_mangled(self, adapter):
         # ServiceObject has composite NK; no global uniqueness on name.
@@ -193,9 +229,12 @@ class TestLoadOrderingIndependence:
         # PLUS VIP-synthesized addresses + services. The VIP fixture has 5
         # entries; 4 valid (MISSING_EXTIP skipped) × 2 synthesized addrs each = 8.
         # Of those 4, 2 are port-forwards → 2 × 2 synth services = 4 services added.
-        assert len(adapter.get_all("address_object")) == 5 + 8  # firewall + VIP-synth
+        # v3.2+: address fixture grew from 5 supported to 8 (added mac, dynamic,
+        # geography via placeholder FQDNs). Service fixture grew from 6 to 8
+        # (added ALL + webproxy mapped to HOPOPT sentinel).
+        assert len(adapter.get_all("address_object")) == 8 + 8  # firewall + VIP-synth
         assert len(adapter.get_all("address_object_group")) == 2
-        assert len(adapter.get_all("service_object")) == 6 + 4  # firewall + VIP-synth
+        assert len(adapter.get_all("service_object")) == 8 + 4  # firewall + VIP-synth
         assert len(adapter.get_all("service_object_group")) == 2
         assert len(adapter.get_all("policy")) == 1
         assert len(adapter.get_all("policy_rule")) == 5

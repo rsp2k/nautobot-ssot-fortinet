@@ -39,5 +39,19 @@
     "protocol": "TCP/UDP/SCTP",
     "tcp-portrange": "8000-8099",
     "comment": "Port range"
+  },
+  {
+    "name": "ALL",
+    "protocol": "IP",
+    "category": "General",
+    "comment": "v3.2+: protocol IP with no protocol-number, maps to HOPOPT"
+  },
+  {
+    "name": "webproxy",
+    "protocol": "ALL",
+    "proxy": "enable",
+    "tcp-portrange": "0-65535:0-65535",
+    "category": "Web Proxy",
+    "comment": "v3.2+: protocol ALL, maps to HOPOPT"
   }
 ]

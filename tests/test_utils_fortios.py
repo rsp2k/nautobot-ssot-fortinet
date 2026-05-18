@@ -115,10 +115,11 @@ class TestFortiosServicePorts:
         # Nautobot has no source-port concept; we keep only dst.
         assert fortios_service_ports({"protocol": "TCP/UDP/SCTP", "tcp-portrange": "513:512-1023"}) == ("TCP", "513")
 
-    def test_all_pseudoprotocol_skipped(self) -> None:
-        # FortiOS "ALL" pseudo-protocol (built-in webproxy svc) has no
-        # firewall-models equivalent — return None so caller skips.
-        assert fortios_service_ports({"protocol": "ALL"}) == (None, "")
+    def test_all_pseudoprotocol_maps_to_hopopt_in_v32(self) -> None:
+        # v3.2+: FortiOS "ALL" pseudo-protocol (built-in webproxy svc)
+        # now maps to HOPOPT sentinel instead of being skipped. Was
+        # (None, "") in v3.1 and earlier — see TestProtocolIPAllMapping.
+        assert fortios_service_ports({"protocol": "ALL"}) == ("HOPOPT", "")
 
     def test_empty_protocol_falls_back_to_tcp(self) -> None:
         # Defensive — FortiOS shouldn't omit protocol, but we don't crash.
@@ -708,3 +709,111 @@ class TestFortiosRouteDestinationCidr:
         from nautobot_ssot_fortinet.utils.fortios import fortios_route_destination_cidr
 
         assert fortios_route_destination_cidr({"dst": "nonsense"}) is None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v3.2 — Kevin-prod-surfaced gaps: ALL/webproxy services + mac/dynamic/geography addrs
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class TestProtocolIPAllMapping:
+    """FortiOS ``protocol IP`` with no protocol-number now maps to HOPOPT (proto 0)
+    instead of being silently dropped — fixes the 80+ policy ALL-reference
+    cascade caught by Kevin's prod sync 2026-05-18."""
+
+    def test_protocol_ip_no_number_maps_to_hopopt(self):
+        # FortiOS 'ALL' service shape
+        svc = {"name": "ALL", "protocol": "IP"}
+        proto, port = fortios_service_ports(svc)
+        assert proto == "HOPOPT"
+        assert port == ""
+
+    def test_protocol_all_maps_to_hopopt(self):
+        # FortiOS 'webproxy' service shape — protocol=ALL with proxy=enable
+        svc = {"name": "webproxy", "protocol": "ALL", "tcp-portrange": "0-65535:0-65535"}
+        proto, port = fortios_service_ports(svc)
+        assert proto == "HOPOPT"
+        assert port == ""
+
+    def test_protocol_ip_with_valid_number_still_works(self):
+        """Regression guard for v2.x mapping — OSPF/GRE/AH/ESP must still resolve."""
+        ospf = {"name": "OSPF", "protocol": "IP", "protocol-number": 89}
+        proto, _ = fortios_service_ports(ospf)
+        assert proto == "OSPFIGP"
+
+        gre = {"name": "GRE", "protocol": "IP", "protocol-number": 47}
+        proto, _ = fortios_service_ports(gre)
+        assert proto == "GRE"
+
+    def test_zero_in_number_to_name_map(self):
+        from nautobot_ssot_fortinet.utils.fortios import IP_PROTOCOL_NUMBER_TO_NAME
+
+        assert IP_PROTOCOL_NUMBER_TO_NAME[0] == "HOPOPT"
+
+
+class TestPlaceholderFqdn:
+    """Synthesized .fortios.invalid placeholders for unmappable FortiOS types."""
+
+    def test_mac_category(self):
+        from nautobot_ssot_fortinet.utils.fortios import fortios_placeholder_fqdn
+
+        assert fortios_placeholder_fqdn("mac", "ipcam01") == "ipcam01.mac.fortios.invalid"
+
+    def test_sanitizes_spaces_to_dashes(self):
+        from nautobot_ssot_fortinet.utils.fortios import fortios_placeholder_fqdn
+
+        assert fortios_placeholder_fqdn("mac", "Kevins Work Phone") == "kevins-work-phone.mac.fortios.invalid"
+
+    def test_dynamic_category(self):
+        from nautobot_ssot_fortinet.utils.fortios import fortios_placeholder_fqdn
+
+        assert (
+            fortios_placeholder_fqdn("dynamic", "EMS_ALL_UNKNOWN_CLIENTS")
+            == "ems-all-unknown-clients.dynamic.fortios.invalid"
+        )
+
+    def test_geography_category_uses_geo_subdomain(self):
+        from nautobot_ssot_fortinet.utils.fortios import fortios_placeholder_fqdn
+
+        assert fortios_placeholder_fqdn("geography", "US") == "us.geo.fortios.invalid"
+
+    def test_empty_name_uses_unnamed_fallback(self):
+        from nautobot_ssot_fortinet.utils.fortios import fortios_placeholder_fqdn
+
+        assert fortios_placeholder_fqdn("mac", "") == "unnamed.mac.fortios.invalid"
+
+    def test_collapses_runs_of_special_chars(self):
+        from nautobot_ssot_fortinet.utils.fortios import fortios_placeholder_fqdn
+
+        assert fortios_placeholder_fqdn("mac", "a!!!b") == "a-b.mac.fortios.invalid"
+
+    def test_label_length_capped(self):
+        """DNS label spec caps at 63 chars."""
+        from nautobot_ssot_fortinet.utils.fortios import fortios_placeholder_fqdn
+
+        long_name = "x" * 100
+        result = fortios_placeholder_fqdn("mac", long_name)
+        label = result.split(".", 1)[0]
+        assert len(label) <= 63
+
+
+class TestSplitPolicyMembersUnknownCallback:
+    """v3.2: unknown address refs can now be surfaced via callback (was silent)."""
+
+    def test_unknown_callback_fires_on_dropped_name(self):
+        unknowns = []
+        members = [{"name": "WEB_SERVERS"}, {"name": "MYSTERY_HOST"}]
+        leaves = {"fgt__root__WEB_SERVERS"}
+        groups = set()
+        leaves_out, _ = split_policy_members(
+            members, leaves, groups, lambda n: f"fgt__root__{n}", unknown_callback=unknowns.append
+        )
+        assert "fgt__root__WEB_SERVERS" in leaves_out
+        assert unknowns == ["MYSTERY_HOST"]
+
+    def test_no_callback_means_silent_drop_backwards_compat(self):
+        """Backwards-compat: not passing the callback works exactly like pre-v3.2."""
+        members = [{"name": "MYSTERY"}]
+        leaves_out, groups_out = split_policy_members(members, set(), set(), lambda n: n)
+        assert leaves_out == []
+        assert groups_out == []

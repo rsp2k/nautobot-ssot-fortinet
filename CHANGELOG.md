@@ -3,6 +3,121 @@
 This project uses [CalVer](https://calver.org/) — versions are `YYYY.MM.DD`
 representing the date of release. Same-day fixes use `YYYY.MM.DD.N`.
 
+## 2026.05.18.13 — FortiOS shape coverage from Kevin's prod sync (v3.2)
+
+Same-day follow-up to v3.1, driven by **operator-reported gaps** when
+Kevin Mueller ran the v3.1 firewall pull Job against his production
+FortiWiFi-61E (FortiOS 7.2). The sync completed successfully but logged
+**80+ warnings** about policies dropping their service references and
+~15 about address objects being skipped. All of those were caused by
+two real-world FortiOS shapes the integration didn't model.
+
+### The cascade we fixed
+
+Kevin's prod config contains a FortiOS-built-in service named ``ALL``
+with shape:
+
+```
+edit "ALL"
+    set protocol IP    ← no protocol-number; defaults to 0
+```
+
+Pre-v3.2 path: ``protocol == "IP"`` + ``protocol-number is None`` →
+return ``(None, "")`` → service skipped → **80+ policies referencing
+``ALL`` silently lose their service reference**. The cascade was the
+symptom; the root cause was one missing protocol-number mapping.
+
+### Service mapping fixes — one fix, 80+ policies un-broken
+
+- **``protocol IP`` with no number** now maps to ``HOPOPT`` (IANA
+  protocol 0) instead of being skipped. HOPOPT is the IPv6 Hop-by-Hop
+  Options header — so rare in real firewall rules that repurposing it
+  as the "any IP protocol" sentinel is safe in practice, and lets the
+  FortiOS ``ALL`` service round-trip into Nautobot intact.
+- **``protocol ALL``** (the FortiOS pseudo-protocol used by the built-in
+  ``webproxy`` service and operator-defined proxy services) maps to the
+  same ``HOPOPT`` sentinel. Identical operator-facing semantics.
+
+### Address type coverage via ``.fortios.invalid`` placeholders
+
+Three FortiOS address types had no clean Nautobot home:
+
+| FortiOS type | Kevin's count | Use case |
+|---|---|---|
+| ``mac`` | 11 | IoT devices identified by MAC address |
+| ``dynamic`` | 3 | FortiClient EMS-managed dynamic groups |
+| ``geography`` | 1 | Country-code address objects |
+
+``nautobot-firewall-models.AddressObject`` requires exactly one of
+``fqdn`` / ``ip_range`` / ``ip_address`` / ``prefix``. There's no MAC
+field, no placeholder slot. v3.2 mints **placeholder FQDNs** under the
+RFC 2606-reserved ``.fortios.invalid`` TLD, so:
+
+- ``ipcam01`` (mac) → fqdn ``ipcam01.mac.fortios.invalid``
+  with description ``[FortiOS MAC: aa:bb:cc:dd:ee:01]``
+- ``EMS_ALL_UNKNOWN_CLIENTS`` (dynamic) → fqdn
+  ``ems-all-unknown-clients.dynamic.fortios.invalid``
+  with description ``[FortiOS dynamic EMS group]``
+- ``GEO_RU`` (geography, country=RU) → fqdn ``geo-ru.geo.fortios.invalid``
+  with description ``[FortiOS geography: RU]``
+
+``.invalid`` never resolves in real DNS (per RFC 2606), so operators
+see immediately that these are sync-time placeholders. The address
+becomes referenceable from firewall policies, which un-breaks any
+policy that referenced an IoT / EMS / geo address.
+
+### New visibility: unknown address refs in policies
+
+Pre-v3.2 ``split_policy_members()`` silently dropped unknown member
+names. The new optional ``unknown_callback`` parameter lets the policy
+adapter log every dropped reference, matching the symmetry of the
+``Policy 'X' references unknown service 'Y'`` warnings.
+
+### New helper: ``fortios_placeholder_fqdn(category, name)``
+
+Pure function in ``utils/fortios.py``. Sanitizes the input name to a
+DNS-safe label (lowercase, ``[a-z0-9-]`` only, ≤63 chars per the
+DNS label spec) and returns ``<sanitized>.<category>.fortios.invalid``.
+
+### Tests
+
+- **249 unit tests** (was 231 in v3.1). +18 covering the new mappings:
+  ALL/webproxy → HOPOPT, placeholder FQDN sanitization, MAC/dynamic/
+  geography address loading, ``unknown_callback`` plumbing.
+- Adapter-level fixture extended with ``mac``, ``dynamic``, ``geography``
+  records + ``ALL`` and ``webproxy`` services so the end-to-end load
+  path is exercised through the same harness as the existing types.
+- Two pre-existing tests updated to reflect v3.2 behavior:
+  ``test_get_all_returns_consistent_count`` and
+  ``test_all_pseudoprotocol_skipped`` (renamed to
+  ``test_all_pseudoprotocol_maps_to_hopopt_in_v32``).
+- All ruff lint + format clean.
+
+### Backwards-compat note
+
+The ``IP_PROTOCOL_NUMBER_TO_NAME`` map gained a new key (``0``). Any
+caller assuming protocol 0 was unmappable will see different behavior
+now. The change is **additive** — previously-skipped services are now
+emitted, but no service that previously worked has changed behavior.
+
+The ``split_policy_members()`` signature gained an optional keyword arg
+``unknown_callback=None`` — calls without it behave exactly as before
+(silent drop).
+
+### Upgrade from v2026.05.18.12
+
+```bash
+pip install --upgrade nautobot-ssot-fortinet
+sudo systemctl restart nautobot nautobot-worker
+```
+
+No schema migration (the v3.1 migration is the latest; v3.2 only
+touches utility code and the firewall pull adapter). Re-run the
+firewall pull Job once to pick up the previously-skipped addresses and
+services. Operators will see new ``AddressObject`` records under names
+like ``<host>__<vdom>__ipcam01`` with ``.fortios.invalid`` FQDN values
+— that's expected, not drift.
+
 ## 2026.05.18.12 — VLAN sub-interfaces + Static Routes (v3.1)
 
 Builds on v3.0's Device + Interface sync with two big additive features:

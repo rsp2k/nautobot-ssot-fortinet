@@ -63,6 +63,17 @@ def check_fortios_response(resp: Any, label: str) -> Any:
 # defs are mapped — unmapped numbers cause the FortiGate adapter to skip
 # the service with a warning rather than crash on a ValidationError.
 IP_PROTOCOL_NUMBER_TO_NAME: dict[int, str] = {
+    # 0 = "any IP protocol" sentinel. IANA reserves 0 for HOPOPT (IPv6
+    # Hop-by-Hop Options), but FortiOS uses ``protocol IP`` with no
+    # ``protocol-number`` to mean "match any IP protocol" — its built-in
+    # ``ALL`` service uses exactly that shape. HOPOPT is so rare in real
+    # firewall rules (operators almost never write IPv6 hop-by-hop rules)
+    # that repurposing it as the "any IP" sentinel is safe in practice
+    # and lets us round-trip the FortiOS ``ALL`` service into Nautobot
+    # without dropping the service object — which previously cascaded
+    # into 80+ policy refs losing their service reference (caught by
+    # Kevin's prod sync 2026-05-18).
+    0: "HOPOPT",
     1: "ICMP",
     2: "IGMP",
     4: "IPv4",  # IP-in-IP encapsulation
@@ -187,18 +198,26 @@ def fortios_service_ports(svc: dict) -> tuple[str | None, str]:
 
     if proto == "IP":
         protnum = svc.get("protocol-number")
+        # FortiOS ``ALL`` service ships with ``protocol IP`` and NO
+        # ``protocol-number`` — operators (and the FortiOS UI) read that
+        # as "any IP protocol". Treat the missing field as protocol 0
+        # so the IANA name HOPOPT lights up as our "any" sentinel
+        # rather than dropping the service entirely.
         if protnum is None:
-            return None, ""
+            protnum = 0
         name = IP_PROTOCOL_NUMBER_TO_NAME.get(int(protnum))
         if name is None:
             return None, ""  # unmapped; caller skips
         return name, ""
 
     if proto == "ALL":
-        # FortiOS ``protocol: ALL`` means "match any IP protocol" — e.g.
-        # the built-in ``webproxy`` service. firewall-models has no
-        # equivalent choice; skip with a None signal.
-        return None, ""
+        # FortiOS ``protocol: ALL`` means "match any IP protocol" — used
+        # by the built-in ``webproxy`` service and any operator-defined
+        # proxy services. Map to the same HOPOPT sentinel as
+        # ``protocol IP`` with no number — both shapes have identical
+        # operator-facing semantics. Pre-v3.2 this returned None and
+        # the caller dropped the service.
+        return IP_PROTOCOL_NUMBER_TO_NAME[0], ""
 
     return proto or "TCP", ""
 
@@ -688,6 +707,57 @@ def is_internal_fortios_interface(name: str) -> bool:
     return any(name.startswith(prefix) for prefix in _INTERNAL_INTERFACE_PREFIXES)
 
 
+# RFC 2606-reserved TLD. We mint placeholder FQDNs under
+# ``.fortios.invalid`` for FortiOS address types that have no clean
+# Nautobot equivalent (``mac``, ``dynamic``, ``geography``) — see
+# :func:`fortios_placeholder_fqdn`. ``.invalid`` is guaranteed to never
+# resolve in real DNS, so operators see immediately that the value is a
+# sync-time placeholder rather than a real hostname.
+PLACEHOLDER_FQDN_TLD = "fortios.invalid"
+
+
+def fortios_placeholder_fqdn(category: str, name: str) -> str:
+    """Build a placeholder FQDN for a FortiOS address type with no Nautobot home.
+
+    Three categories ship in v3.2:
+
+    - ``mac`` — IoT-style address objects identified by MAC address.
+      Nautobot's firewall-models ``AddressObject`` has no MAC field;
+      a placeholder FQDN keeps the address referenceable from policies
+      and makes the MAC visible in the description annotation.
+    - ``dynamic`` — FortiClient EMS-managed dynamic groups. The actual
+      member set lives on the EMS server, not in the FortiGate config;
+      we capture the EMS group name so policies don't lose the reference.
+    - ``geography`` — country-code address objects. FortiOS resolves
+      these against an embedded GeoIP DB; we capture the country code.
+
+    Sanitizes the input name to a DNS-safe label (lowercase, replace any
+    char that isn't ``[a-z0-9-]`` with ``-``, strip leading/trailing
+    dashes, collapse runs). Limits the final label to 63 chars (DNS
+    label limit) to keep the FQDN spec-valid.
+
+    >>> fortios_placeholder_fqdn("mac", "ipcam01")
+    'ipcam01.mac.fortios.invalid'
+    >>> fortios_placeholder_fqdn("mac", "Kevins Work Phone")
+    'kevins-work-phone.mac.fortios.invalid'
+    >>> fortios_placeholder_fqdn("dynamic", "EMS_ALL_UNKNOWN_CLIENTS")
+    'ems-all-unknown-clients.dynamic.fortios.invalid'
+    >>> fortios_placeholder_fqdn("geography", "US")
+    'us.geo.fortios.invalid'
+    >>> fortios_placeholder_fqdn("mac", "")
+    'unnamed.mac.fortios.invalid'
+    """
+    import re
+
+    sub_tld = {"mac": "mac", "dynamic": "dynamic", "geography": "geo"}.get(category, category)
+    sanitized = re.sub(r"[^a-z0-9-]+", "-", name.lower()).strip("-")
+    if not sanitized:
+        sanitized = "unnamed"
+    if len(sanitized) > 63:
+        sanitized = sanitized[:63].rstrip("-")
+    return f"{sanitized}.{sub_tld}.{PLACEHOLDER_FQDN_TLD}"
+
+
 def fortios_route_destination_cidr(raw: dict) -> str | None:
     """Extract a CIDR destination from a FortiOS ``router.static`` record.
 
@@ -732,6 +802,7 @@ def split_policy_members(
     leaf_names: set[str],
     group_names: set[str],
     mangler,
+    unknown_callback=None,
 ) -> tuple[list[str], list[str]]:
     """Split a FortiOS policy member list into (leaves, groups).
 
@@ -748,11 +819,16 @@ def split_policy_members(
         group_names: set of MANGLED group object names already in the store.
         mangler: callable ``(raw_name) -> mangled_name``. Typically built
             with ``functools.partial(mangle_name, hostname, vdom)``.
+        unknown_callback: optional callable invoked with each raw name that
+            doesn't match any loaded leaf or group. Lets the caller log
+            dropped references the same way the service-classification
+            path does (v3.2+). Defaults to silent-drop for backwards-compat.
 
     Returns:
         ``(sorted_leaves, sorted_groups)`` — both contain MANGLED names so
         they're ready to store as DiffSync attrs. Names not found in
-        either set are silently dropped.
+        either set are passed to ``unknown_callback`` (if provided) and
+        otherwise silently dropped.
 
     """
     leaves: list[str] = []
@@ -766,5 +842,6 @@ def split_policy_members(
             leaves.append(mn)
         elif mn in group_names:
             groups.append(mn)
-        # else: unknown name — caller may log a warning
+        elif unknown_callback is not None:
+            unknown_callback(n)
     return sorted(leaves), sorted(groups)

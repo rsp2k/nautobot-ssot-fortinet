@@ -34,12 +34,23 @@
     "name": "GEO_RU",
     "type": "geography",
     "country": "RU",
-    "comment": "Should be skipped — geography type not modeled"
+    "comment": "v3.2+: loads as placeholder FQDN"
   },
   {
     "name": "WILD_LAB",
     "type": "wildcard",
     "wildcard": "10.0.0.0 255.255.0.255",
-    "comment": "Should be skipped — wildcard type not modeled"
+    "comment": "Still skipped — wildcard type not modeled"
+  },
+  {
+    "name": "ipcam01",
+    "type": "mac",
+    "macaddr": [{"macaddr": "aa:bb:cc:dd:ee:01"}],
+    "comment": "v3.2+: loads as placeholder FQDN with MAC annotation"
+  },
+  {
+    "name": "EMS_ALL_UNKNOWN_CLIENTS",
+    "type": "dynamic",
+    "comment": "v3.2+: loads as placeholder FQDN, EMS-managed"
   }
 ]

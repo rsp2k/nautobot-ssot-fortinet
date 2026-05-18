@@ -30,6 +30,7 @@ from nautobot_ssot_fortinet.diffsync.models.firewall import (
 )
 from nautobot_ssot_fortinet.utils.fortios import (
     fortios_action,
+    fortios_placeholder_fqdn,
     fortios_service_ports,
     fortios_subnet_to_cidr,
     mangle_name,
@@ -116,13 +117,17 @@ class FortiGateFirewallAdapter(Adapter):
                 continue
             address_type, value = _address_value(raw)
             if address_type is None:
-                # Geography / wildcard / dynamic types not modeled in
-                # firewall-models — skip with a job log entry if present.
+                # Truly-unsupported types (wildcard, etc.) — skip with
+                # a log entry. mac / dynamic / geography are now handled
+                # via placeholder FQDNs (v3.2+), so they no longer reach
+                # this branch.
                 if self.job:
                     self.job.logger.warning(
                         f"Skipping address {original_name!r}: unsupported FortiOS type {raw.get('type')!r}"
                     )
                 continue
+
+            description = self._build_address_description(raw)
             self.add(
                 self.address_object(
                     name=mangle_name(self.hostname, self.vdom, original_name),
@@ -131,9 +136,48 @@ class FortiGateFirewallAdapter(Adapter):
                     original_name=original_name,
                     vdom=self.vdom,
                     hostname=self.hostname,
-                    description=raw.get("comment", ""),
+                    description=description,
                 )
             )
+
+    @staticmethod
+    def _build_address_description(raw: dict) -> str:
+        """Build the description, annotating placeholder types with their source value.
+
+        For ``mac``/``dynamic``/``geography`` addresses (v3.2+) we
+        synthesize a placeholder FQDN — without the annotation, operators
+        looking at the Nautobot AddressObject would only see the
+        ``<name>.<category>.fortios.invalid`` value with no clue what
+        the FortiOS-side actual value was.
+
+        Annotations preserved:
+
+        - ``mac`` → ``[FortiOS MAC: <mac-address>]``
+        - ``dynamic`` → ``[FortiOS dynamic EMS group]``
+        - ``geography`` → ``[FortiOS geography: <country-code>]``
+        """
+        ftype = raw.get("type", "ipmask")
+        comment = raw.get("comment", "") or ""
+        annotations: list[str] = []
+        if ftype == "mac":
+            mac_list = raw.get("macaddr", []) or []
+            # FortiOS exposes macaddr as a list of {"macaddr": "aa:bb:..."}
+            macs = [m.get("macaddr", "") for m in mac_list if isinstance(m, dict)]
+            macs = [m for m in macs if m]
+            if macs:
+                annotations.append(f"[FortiOS MAC: {','.join(macs)}]")
+            else:
+                annotations.append("[FortiOS MAC: <unset>]")
+        elif ftype == "dynamic":
+            annotations.append("[FortiOS dynamic EMS group]")
+        elif ftype == "geography":
+            country = raw.get("country", "") or "?"
+            annotations.append(f"[FortiOS geography: {country}]")
+        if not annotations:
+            return comment
+        if comment:
+            return f"{comment} {' '.join(annotations)}"
+        return " ".join(annotations)
 
     def _load_address_groups(self) -> None:
         for raw in self.client.cmdb.firewall.addrgrp.get():
@@ -247,8 +291,22 @@ class FortiGateFirewallAdapter(Adapter):
             original_name = raw.get("name", "") or f"policy_{policyid}"
             rule_name = mangler(f"rule_{policyid}")
 
-            src_addrs, src_grps = split_policy_members(raw.get("srcaddr", []), leaf_addr_names, grp_addr_names, mangler)
-            dst_addrs, dst_grps = split_policy_members(raw.get("dstaddr", []), leaf_addr_names, grp_addr_names, mangler)
+            # v3.2: surface unknown address refs in the log so operators see
+            # what got dropped — pre-v3.2 these were silent. Helps operators
+            # spot when a synced policy is missing intended members because
+            # the address itself was an unsupported FortiOS type.
+            def _unknown_addr(name, *, policy=original_name):
+                if self.job:
+                    self.job.logger.warning(
+                        f"Policy {policy!r} references unknown address {name!r} — dropping reference"
+                    )
+
+            src_addrs, src_grps = split_policy_members(
+                raw.get("srcaddr", []), leaf_addr_names, grp_addr_names, mangler, _unknown_addr
+            )
+            dst_addrs, dst_grps = split_policy_members(
+                raw.get("dstaddr", []), leaf_addr_names, grp_addr_names, mangler, _unknown_addr
+            )
 
             # Services: FortiOS service field is destination-side. Each
             # entry is either a ServiceObject (lookup by raw name in
@@ -480,8 +538,16 @@ def _mapped_ip_to_address_value(raw: str) -> tuple[str, str]:
 def _address_value(raw: dict) -> tuple[str | None, str]:
     """Pick the right (type, value) for a FortiOS address dict.
 
-    Returns ``(None, "")`` for FortiOS types we don't model (geography,
-    wildcard, dynamic, mac, etc.). Callers should skip those.
+    Returns ``(None, "")`` for FortiOS types we can't represent at all
+    (``wildcard`` and other unsupported variants). Callers should skip
+    those records.
+
+    v3.2 extends coverage to ``mac`` / ``dynamic`` / ``geography`` types
+    via :func:`fortios_placeholder_fqdn` — those return
+    ``("fqdn", "<sanitized>.<category>.fortios.invalid")`` so the address
+    survives the sync as a placeholder FQDN. The caller is responsible
+    for enriching the AddressObject's ``description`` with the
+    operator-visible source value (MAC / EMS group name / country code).
     """
     ftype = raw.get("type", "ipmask")  # FortiOS default is ipmask when omitted
     if ftype in ("ipmask", "interface-subnet"):
@@ -516,4 +582,11 @@ def _address_value(raw: dict) -> tuple[str | None, str]:
     if ftype == "ipaddress":
         ip = raw.get("subnet", "").split(" ", 1)[0]  # FortiOS stores host as 'a.b.c.d 255.255.255.255'
         return ("ipaddress", ip) if ip else (None, "")
+    # v3.2: types with no clean Nautobot home → synthesize a placeholder
+    # FQDN under .fortios.invalid so the address survives the sync.
+    # The caller (adapter._load_addresses) annotates the description with
+    # the actual MAC / EMS-group / country-code value.
+    if ftype in ("mac", "dynamic", "geography"):
+        name = raw.get("name", "")
+        return "fqdn", fortios_placeholder_fqdn(ftype, name)
     return None, ""
