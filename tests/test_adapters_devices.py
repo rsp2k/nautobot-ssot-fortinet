@@ -29,6 +29,7 @@ def _client_with_interfaces(
     interfaces: list[dict],
     routes: list[dict] | None = None,
     serial: str = "FWF61E0000000000",
+    addresses: list[dict] | None = None,
 ) -> MagicMock:
     """Build a MagicMock client whose system.interface.get() returns the given list.
 
@@ -36,10 +37,16 @@ def _client_with_interfaces(
     HTTP) and reads the ``serial`` field from the envelope JSON, NOT
     ``.fortigate.get_result()`` which strips the envelope and was broken
     against the real list-returning shape of ``system/interface``.
+
+    v3.2.6+: ``addresses=`` supplies the list returned by
+    ``cmdb.firewall.address.get(filter=...)`` used by the dstaddr
+    resolver path. The mock ignores the filter and returns the full
+    list — tests assert on what the resolver picks.
     """
     c = MagicMock()
     c.cmdb.system.interface.get.return_value = interfaces
     c.cmdb.router.static.get.return_value = routes or []
+    c.cmdb.firewall.address.get.return_value = addresses or []
 
     # Mock the raw .get() to return a response object with status_code=200
     # and a .json() method returning the envelope shape FortiOS actually
@@ -271,8 +278,8 @@ class TestStaticRouteLoading:
         assert r.blackhole is False
         assert r.gateway == "192.168.1.1"
 
-    def test_named_address_route_is_skipped(self, base_adapter_kwargs):
-        """Routes using dstaddr (named address object) are skipped in v3.1."""
+    def test_named_address_route_resolves_via_resolver(self, base_adapter_kwargs):
+        """v3.2.6+: single-entry dstaddr now resolves via firewall.address lookup."""
         routes = [
             {
                 "seq-num": 7,
@@ -282,9 +289,83 @@ class TestStaticRouteLoading:
                 "vdom": "root",
             }
         ]
-        adapter = FortiGateDevicesAdapter(client=_client_with_interfaces([], routes), **base_adapter_kwargs)
+        addresses = [
+            {"name": "DC_VLANS", "type": "ipmask", "subnet": "10.20.0.0 255.255.0.0"},
+        ]
+        adapter = FortiGateDevicesAdapter(
+            client=_client_with_interfaces([], routes, addresses=addresses),
+            **base_adapter_kwargs,
+        )
+        adapter.load()
+        r = next(iter(adapter.get_all("fortigate_static_route")))
+        assert r.destination == "10.20.0.0/16"
+        assert r.seq_num == 7
+
+    def test_dstaddr_resolver_skips_unknown_address(self, base_adapter_kwargs):
+        """Dstaddr referencing a non-existent address skips the route (not crash)."""
+        routes = [
+            {"seq-num": 8, "dstaddr": [{"name": "MISSING"}], "gateway": "10.1.1.1", "device": "x", "vdom": "root"}
+        ]
+        # addresses list is empty — name doesn't resolve
+        adapter = FortiGateDevicesAdapter(
+            client=_client_with_interfaces([], routes, addresses=[]),
+            **base_adapter_kwargs,
+        )
         adapter.load()
         assert adapter.get_all("fortigate_static_route") == []
+
+    def test_dstaddr_resolver_skips_fqdn_address(self, base_adapter_kwargs):
+        """FQDN addresses can't be represented as a route CIDR — skip with warning."""
+        routes = [
+            {"seq-num": 9, "dstaddr": [{"name": "vendor.com"}], "gateway": "10.1.1.1", "device": "x", "vdom": "root"}
+        ]
+        addresses = [{"name": "vendor.com", "type": "fqdn", "fqdn": "vendor.com"}]
+        adapter = FortiGateDevicesAdapter(
+            client=_client_with_interfaces([], routes, addresses=addresses),
+            **base_adapter_kwargs,
+        )
+        adapter.load()
+        assert adapter.get_all("fortigate_static_route") == []
+
+    def test_dstaddr_multi_entry_skipped(self, base_adapter_kwargs):
+        """Multi-entry dstaddr is ambiguous (would need multiple Route records)."""
+        routes = [
+            {
+                "seq-num": 10,
+                "dstaddr": [{"name": "A"}, {"name": "B"}],
+                "gateway": "10.1.1.1",
+                "device": "x",
+                "vdom": "root",
+            }
+        ]
+        addresses = [
+            {"name": "A", "type": "ipmask", "subnet": "10.30.0.0 255.255.255.0"},
+            {"name": "B", "type": "ipmask", "subnet": "10.40.0.0 255.255.255.0"},
+        ]
+        adapter = FortiGateDevicesAdapter(
+            client=_client_with_interfaces([], routes, addresses=addresses),
+            **base_adapter_kwargs,
+        )
+        adapter.load()
+        assert adapter.get_all("fortigate_static_route") == []
+
+    def test_dstaddr_cache_avoids_repeat_lookups(self, base_adapter_kwargs):
+        """Two routes referencing the same address name = 1 firewall.address.get() call."""
+        routes = [
+            {"seq-num": 11, "dstaddr": [{"name": "SHARED"}], "gateway": "10.1.1.1", "device": "x", "vdom": "root"},
+            {"seq-num": 12, "dstaddr": [{"name": "SHARED"}], "gateway": "10.2.2.2", "device": "y", "vdom": "root"},
+        ]
+        addresses = [{"name": "SHARED", "type": "ipmask", "subnet": "10.50.0.0 255.255.255.0"}]
+        client = _client_with_interfaces([], routes, addresses=addresses)
+        adapter = FortiGateDevicesAdapter(client=client, **base_adapter_kwargs)
+        adapter.load()
+        # Both routes should have loaded with the same destination
+        loaded = sorted(adapter.get_all("fortigate_static_route"), key=lambda r: r.seq_num)
+        assert len(loaded) == 2
+        assert loaded[0].destination == "10.50.0.0/24"
+        assert loaded[1].destination == "10.50.0.0/24"
+        # And firewall.address.get should have been called only ONCE (cache hit on 2nd route)
+        assert client.cmdb.firewall.address.get.call_count == 1
 
     def test_route_in_other_vdom_is_skipped(self, base_adapter_kwargs):
         routes = [

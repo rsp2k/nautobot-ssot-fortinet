@@ -224,9 +224,10 @@ class FortiGateDevicesAdapter(Adapter):
         ``seq-num`` (the route's primary key per device/vdom) plus the
         usual dst/gateway/device/distance/priority/comment/blackhole fields.
 
-        Routes that use the named-address-object form (``dstaddr`` instead
-        of ``dst``) are skipped with a warning — see
-        :func:`fortios_route_destination_cidr` for why.
+        v3.2.6+ resolves single-entry ``dstaddr`` (named-address-object)
+        routes by hitting ``firewall.address`` for the referenced name
+        and extracting its CIDR. See :meth:`_resolve_address_cidr` for
+        the cache + type-handling logic.
         """
         try:
             raw_routes = self.client.cmdb.router.static.get()
@@ -235,26 +236,44 @@ class FortiGateDevicesAdapter(Adapter):
                 self.job.logger.warning(f"Could not pull router.static from FortiGate: {e}")
             return
 
+        # Per-sync cache so we make at most 1 REST call per unique address
+        # name across all routes loaded in this sync run.
+        self._addr_cidr_cache: dict[str, str | None] = {}
+
         loaded = 0
-        skipped_named = 0
+        skipped_dstaddr = 0
         skipped_vdom = 0
+        resolved_via_addr = 0
         for raw in raw_routes:
             if raw.get("vdom", "root") != self.vdom:
                 skipped_vdom += 1
                 continue
 
-            destination = fortios_route_destination_cidr(raw)
+            destination = fortios_route_destination_cidr(raw, resolver=self._resolve_address_cidr)
             if destination is None:
-                # Either named-address-object form or malformed dst
+                # Three cases land here: malformed dst, multi-entry dstaddr,
+                # or single-entry dstaddr that resolved to None. Tell the
+                # operator specifically which.
                 if raw.get("dstaddr"):
-                    skipped_named += 1
+                    skipped_dstaddr += 1
                     if self.job:
                         names = [d.get("name", "?") for d in raw.get("dstaddr", []) if isinstance(d, dict)]
-                        self.job.logger.warning(
-                            f"Skipping route seq={raw.get('seq-num')}: uses named-address-object form "
-                            f"(dstaddr={names!r}) — v3.1 only supports literal dst CIDRs"
-                        )
+                        if len(names) > 1:
+                            reason = (
+                                f"multi-entry dstaddr={names!r} — ambiguous (would need N routes sharing one seq_num)"
+                            )
+                        else:
+                            reason = (
+                                f"dstaddr={names!r} couldn't resolve to a single CIDR "
+                                "(address may be fqdn/iprange/mac/dynamic/geography type, "
+                                "or doesn't exist on FortiGate)"
+                            )
+                        self.job.logger.warning(f"Skipping route seq={raw.get('seq-num')}: {reason}")
                 continue
+
+            # Track resolved-via-dstaddr separately for the summary log
+            if not raw.get("dst", "").strip() and raw.get("dstaddr"):
+                resolved_via_addr += 1
 
             seq_num = raw.get("seq-num")
             if seq_num is None:
@@ -295,10 +314,72 @@ class FortiGateDevicesAdapter(Adapter):
 
         if self.job:
             self.job.logger.info(
-                f"Loaded {loaded} static routes from FortiGate {self.hostname!r}. "
-                f"Skipped {skipped_named} routes using named-address-object form, "
+                f"Loaded {loaded} static routes from FortiGate {self.hostname!r} "
+                f"({resolved_via_addr} resolved via dstaddr address-object lookup). "
+                f"Skipped {skipped_dstaddr} routes whose dstaddr couldn't resolve to a single CIDR, "
                 f"{skipped_vdom} routes in other vdoms."
             )
+
+    def _resolve_address_cidr(self, name: str) -> str | None:
+        """Resolve a FortiOS address-object name to a CIDR string (v3.2.6+).
+
+        Used by :meth:`_load_static_routes` to handle the ``dstaddr`` form
+        of ``router.static`` entries. Hits ``cmdb/firewall/address`` for
+        the named object and extracts its CIDR if (and only if) the
+        address is type ``ipmask`` — the only FortiOS address type with
+        a single-CIDR representation usable as a route destination.
+
+        Cached per sync via ``self._addr_cidr_cache`` so the same address
+        name referenced by multiple routes only triggers one REST call.
+        ``None`` in the cache means "looked it up, can't represent as
+        CIDR" (don't re-fetch).
+
+        Returns:
+            CIDR string for ipmask-type addresses.
+            ``None`` for: fqdn/iprange/mac/dynamic/geography (no clean
+            single-CIDR mapping), missing address, or REST errors.
+
+        """
+        if name in self._addr_cidr_cache:
+            return self._addr_cidr_cache[name]
+
+        try:
+            raws = self.client.cmdb.firewall.address.get(filter=f"name=={name}")
+        except Exception as e:  # noqa: BLE001
+            if self.job:
+                self.job.logger.warning(
+                    f"Address lookup for {name!r} failed: {e} — route using this dstaddr will be skipped"
+                )
+            self._addr_cidr_cache[name] = None
+            return None
+
+        # FortiOS may return [] on miss or a list of matches
+        match = next((r for r in raws if r.get("name") == name), None)
+        if match is None:
+            self._addr_cidr_cache[name] = None
+            return None
+
+        ftype = match.get("type", "ipmask")
+        if ftype not in ("ipmask", "interface-subnet"):
+            # fqdn/iprange/mac/dynamic/geography — no single-CIDR rep
+            self._addr_cidr_cache[name] = None
+            return None
+
+        subnet = match.get("subnet", "")
+        if not subnet:
+            self._addr_cidr_cache[name] = None
+            return None
+
+        try:
+            from nautobot_ssot_fortinet.utils.fortios import fortios_subnet_to_cidr
+
+            cidr = fortios_subnet_to_cidr(subnet)
+        except ValueError:
+            self._addr_cidr_cache[name] = None
+            return None
+
+        self._addr_cidr_cache[name] = cidr
+        return cidr
 
     def _parse_interface_ips(self, raw: dict) -> list[str]:
         """Extract CIDR strings from a FortiOS interface's ``ip``/``secondary-IP`` fields.

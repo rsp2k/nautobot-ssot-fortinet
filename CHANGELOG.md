@@ -3,6 +3,123 @@
 This project uses [CalVer](https://calver.org/) — versions are `YYYY.MM.DD`
 representing the date of release. Same-day fixes use `YYYY.MM.DD.N`.
 
+## 2026.05.18.13.6 — Named-address-object route resolution + two FortiOS shape gotchas
+
+Closes the "v3.1 deliberately skips dstaddr-form routes" deferral from
+the v3.1 release notes. Operators (including Kevin's prod sync) with
+routes that reference named address objects via FortiOS's ``dstaddr``
+field now sync correctly. The resolver is self-contained (one extra
+REST call per unique address name per sync, cached) — no cross-Job
+ordering dependency with the firewall pull.
+
+### What's new
+
+- ``fortios_route_destination_cidr()`` gains an optional ``resolver``
+  callback. When provided AND the route uses ``dstaddr``, the callback
+  is invoked with the address name and expected to return a CIDR string
+  (or None if the address can't be represented as a single CIDR).
+- ``FortiGateDevicesAdapter._resolve_address_cidr()`` is the production
+  implementation: hits ``cmdb/firewall/address`` filtered by name,
+  reads ``type`` + ``subnet``, returns CIDR for ipmask-type addresses.
+  Per-sync cache so repeat references = 1 REST call.
+- New pure helper ``_normalize_dstaddr_names()`` for the two FortiOS
+  dstaddr shapes (see below).
+
+### Two FortiOS shape gotchas surfaced during live validation
+
+Both caught while injecting a dstaddr-form route on the dev FortiWiFi-61E
+to validate the new resolver path end-to-end.
+
+**1. ``dstaddr`` returned as plain string, not list-of-dict (FortiOS 7.0.x).**
+
+Documented examples and FortiOS 7.2+ return ``dstaddr`` as
+``[{"name": "X"}]``. FortiOS 7.0.14 on the FortiWiFi-61E returns it
+as the bare string ``"X"``. Both shapes appear in the wild; both are
+handled uniformly via ``_normalize_dstaddr_names()``.
+
+**2. ``dst="0.0.0.0 0.0.0.0"`` is a PLACEHOLDER, not a default route,
+when ``dstaddr`` is populated.**
+
+When operators create a dstaddr-based route, FortiOS sets ``dst`` to
+the all-zeros sentinel internally — but the *real* destination is what
+``dstaddr`` resolves to. Pre-v3.2.6 our code checked ``dst`` first
+and would have misread these as default routes (``0.0.0.0/0``).
+**Precedence rule flipped**: dstaddr wins when populated, regardless
+of dst value.
+
+### Live-validation result
+
+Against fgt-dev (FortiWiFi-61E / FortiOS 7.0.14) with a real
+dstaddr-form route:
+
+```
+Route seq=9002, FortiOS state: dst="0.0.0.0 0.0.0.0", dstaddr="ssot_test_dstaddr"
+Address ssot_test_dstaddr: type=ipmask, subnet="192.0.2.0 255.255.255.0"
+
+→ Nautobot FortinetStaticRoute:
+  seq_num=9002, destination="192.0.2.0/24", gateway="192.168.1.1", dev=wan2
+```
+
+Pre-v3.2.6 this would have synced as destination=``0.0.0.0/0`` (wrong
+— would have been treated as a default-route override).
+
+### FortiOS REST limitations (documented, not bugs)
+
+Creating dstaddr-form routes VIA REST is gated by two FortiOS REST
+quirks discovered during the live-injection probe:
+
+1. **`error -173` (XSS check)** rejects POST/PUT bodies containing
+   ``dstaddr: [{"name": "..."}]`` — the `{ ` character pattern
+   triggers FortiOS's XSS input filter.
+2. **`error -3` (entry not found)** rejects route create unless the
+   referenced AddressObject has ``allow-routing: enable``.
+
+These only affect CREATE-via-REST (which v3.2.6 doesn't do). Routes
+created via FortiOS web UI or CLI are unaffected and read correctly
+through v3.2.6's resolver path. The future static-route push feature
+(v3.3+) will document these for operators.
+
+### What's deliberately NOT supported
+
+- **Multi-entry dstaddr** — FortiOS allows ``dstaddr=[{name: A}, {name: B}]``
+  semantically meaning "this route matches any of these addresses".
+  Mapping to N Nautobot Route records sharing one seq_num would violate
+  our ``(device, vdom, seq_num)`` unique constraint. Skipped with a
+  clear warning so operators see exactly what was dropped.
+- **dstaddr → fqdn/iprange/mac/dynamic/geography addresses** — no
+  clean single-CIDR mapping for a route destination. Skipped with the
+  type-specific warning text.
+
+### Tests
+
+- **269 unit tests** (was 263 in v3.2.5). +6 covering:
+  - dstaddr string form (FortiOS 7.0.x shape) resolves via callback
+  - dstaddr list-of-dict form (FortiOS 7.2+ shape) resolves via callback
+  - dstaddr-precedence-over-placeholder-dst (the live-caught bug)
+  - multi-entry dstaddr skipped
+  - resolver returns None propagates (skip)
+  - ``_normalize_dstaddr_names()`` pure helper for the two shapes
+- Live-validated end-to-end against fgt-dev's actual FortiOS 7.0.14
+  RUNNING DSTADDR ROUTE — not just synthetic fixture data.
+
+### Backwards-compat note
+
+The new ``resolver=None`` default to ``fortios_route_destination_cidr()``
+preserves pre-v3.2.6 behavior (callers without a resolver still skip
+dstaddr-form routes). Any external code calling the helper without a
+resolver kwarg keeps working.
+
+### Upgrade
+
+```bash
+pip install --upgrade nautobot-ssot-fortinet  # = 2026.5.18.13.6
+sudo systemctl restart nautobot nautobot-worker
+```
+
+Re-run the Devices Job once to pick up any previously-skipped
+dstaddr-form routes. Each will get its own FortinetStaticRoute record
+with the resolved CIDR.
+
 ## 2026.05.18.13.5 — Device.serial extraction fix (closes v3.0 carryover bug)
 
 The known-since-v3.0 empty-serial bug is fixed. Every Device created by

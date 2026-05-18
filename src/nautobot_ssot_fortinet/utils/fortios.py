@@ -758,7 +758,7 @@ def fortios_placeholder_fqdn(category: str, name: str) -> str:
     return f"{sanitized}.{sub_tld}.{PLACEHOLDER_FQDN_TLD}"
 
 
-def fortios_route_destination_cidr(raw: dict) -> str | None:
+def fortios_route_destination_cidr(raw: dict, resolver=None) -> str | None:
     """Extract a CIDR destination from a FortiOS ``router.static`` record.
 
     FortiOS stores route destinations in one of two shapes:
@@ -769,32 +769,116 @@ def fortios_route_destination_cidr(raw: dict) -> str | None:
        collapse it to network form.
     2. ``dstaddr`` — list of named firewall.address references (e.g.
        ``[{"name": "DC_VLANS"}]``). Used when operators define route
-       destinations as named address objects for reusability. We **don't
-       support** this form in v3.1 — would require resolving the address
-       object back to a CIDR mid-sync, which complicates the adapter and
-       introduces ordering dependencies between firewall + device Jobs.
-       Returns ``None`` so the caller can skip with a warning.
+       destinations as named address objects for reusability.
+
+    Args:
+        raw: A FortiOS ``router.static`` record dict.
+        resolver: Optional callable ``(address_name) -> CIDR | None``.
+            When provided AND the route uses ``dstaddr`` form with exactly
+            one entry, we call ``resolver(name)`` to resolve the address
+            object to a CIDR string. v3.2.6+ uses this to support
+            named-address-object routes; pre-v3.2.6 always passed
+            ``resolver=None`` (skipped with warning). Returning ``None``
+            from the resolver means "address exists but its type isn't
+            representable as a single CIDR" (e.g. fqdn, iprange) — the
+            caller still gets ``None`` back and skips.
 
     Returns ``"0.0.0.0/0"`` for the default route (FortiOS represents this
     as ``"0.0.0.0 0.0.0.0"`` — :func:`fortios_subnet_to_cidr` handles it).
+    Returns ``None`` when:
+      - The dotted-mask `dst` is malformed
+      - The route uses `dstaddr` with multiple entries (ambiguous mapping
+        to a single FortinetStaticRoute record)
+      - The route uses `dstaddr` but no resolver was passed
+      - The resolver returns None for a `dstaddr` entry
 
     >>> fortios_route_destination_cidr({"dst": "10.20.0.0 255.255.0.0"})
     '10.20.0.0/16'
     >>> fortios_route_destination_cidr({"dst": "0.0.0.0 0.0.0.0"})
     '0.0.0.0/0'
-    >>> fortios_route_destination_cidr({"dstaddr": [{"name": "DC_VLANS"}]})  # named-ref — skipped
+    >>> fortios_route_destination_cidr({"dstaddr": [{"name": "X"}]})  # no resolver
+    >>> fortios_route_destination_cidr(
+    ...     {"dstaddr": [{"name": "DC_NET"}]},
+    ...     resolver=lambda n: "10.20.0.0/16" if n == "DC_NET" else None,
+    ... )
+    '10.20.0.0/16'
+    >>> # FortiOS 7.0.x dstaddr-as-string shape (caught against fgt-dev):
+    >>> fortios_route_destination_cidr(
+    ...     {"dst": "0.0.0.0 0.0.0.0", "dstaddr": "DC_NET"},
+    ...     resolver=lambda n: "10.20.0.0/16" if n == "DC_NET" else None,
+    ... )
+    '10.20.0.0/16'
+    >>> fortios_route_destination_cidr(
+    ...     {"dstaddr": [{"name": "A"}, {"name": "B"}]},  # multi → ambiguous
+    ...     resolver=lambda n: "10.0.0.0/24",
+    ... )
     >>> fortios_route_destination_cidr({})
+
     """
+    # IMPORTANT precedence: dstaddr (named address) WINS when populated.
+    # FortiOS sets ``dst = "0.0.0.0 0.0.0.0"`` as a placeholder on the
+    # underlying record when dstaddr is the real destination — checking
+    # dst first would misread these as default-routes. Surfaced against
+    # FortiOS 7.0.14 on the dev FortiWiFi-61E during v3.2.6 validation.
+    names = _normalize_dstaddr_names(raw.get("dstaddr"))
+    if names:
+        # Multi-entry dstaddr maps to N FortinetStaticRoute records sharing
+        # one seq_num — but our DB enforces (device, vdom, seq_num)
+        # uniqueness. Skip with None; the adapter logs the specifics.
+        if len(names) != 1:
+            return None
+        if resolver is None:
+            return None
+        return resolver(names[0])
+
     dst = raw.get("dst", "")
     if dst and dst.strip():
         try:
             return fortios_subnet_to_cidr(dst)
         except ValueError:
             return None
-    # Named-reference form — explicitly unsupported in v3.1; let caller log.
-    if raw.get("dstaddr"):
-        return None
+
     return None
+
+
+def _normalize_dstaddr_names(raw_dstaddr) -> list[str]:
+    """Extract address names from FortiOS ``dstaddr`` regardless of shape.
+
+    FortiOS 7.0.14 on FortiWiFi-61E returns ``dstaddr`` as a plain string
+    (the address name, e.g. ``"DC_VLANS"``). Other FortiOS versions
+    (typically 7.2+) return the list-of-dict shape
+    (e.g. ``[{"name": "DC_VLANS"}]``). Both shapes are documented; both
+    appear in the wild. Handle them uniformly.
+
+    Returns the empty list for: missing field, empty string, empty list,
+    malformed list entries.
+
+    >>> _normalize_dstaddr_names(None)
+    []
+    >>> _normalize_dstaddr_names("")
+    []
+    >>> _normalize_dstaddr_names("DC_VLANS")  # FortiOS 7.0.x string form
+    ['DC_VLANS']
+    >>> _normalize_dstaddr_names([{"name": "DC_VLANS"}])  # FortiOS 7.2+ list form
+    ['DC_VLANS']
+    >>> _normalize_dstaddr_names([{"name": "A"}, {"name": "B"}])
+    ['A', 'B']
+    >>> _normalize_dstaddr_names([{"not-name": "X"}])  # malformed
+    []
+    """
+    if not raw_dstaddr:
+        return []
+    if isinstance(raw_dstaddr, str):
+        return [raw_dstaddr] if raw_dstaddr.strip() else []
+    if isinstance(raw_dstaddr, list):
+        names = []
+        for entry in raw_dstaddr:
+            if isinstance(entry, dict):
+                n = entry.get("name")
+                if n:
+                    names.append(n)
+        return names
+    return []
 
 
 def split_policy_members(

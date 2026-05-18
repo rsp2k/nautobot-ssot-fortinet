@@ -693,11 +693,112 @@ class TestFortiosRouteDestinationCidr:
 
         assert fortios_route_destination_cidr({"dst": "203.0.113.5 255.255.255.255"}) == "203.0.113.5/32"
 
-    def test_named_address_form_returns_none(self):
-        """v3.1 deliberately skips the named-address-object form — caller logs and skips."""
+    def test_named_address_form_without_resolver_returns_none(self):
+        """No resolver = pre-v3.2.6 skip behavior."""
         from nautobot_ssot_fortinet.utils.fortios import fortios_route_destination_cidr
 
         assert fortios_route_destination_cidr({"dstaddr": [{"name": "DC_VLANS"}]}) is None
+
+    def test_named_address_form_with_resolver_returns_cidr(self):
+        """v3.2.6+: single-entry dstaddr resolves via callback."""
+        from nautobot_ssot_fortinet.utils.fortios import fortios_route_destination_cidr
+
+        result = fortios_route_destination_cidr(
+            {"dstaddr": [{"name": "DC_NET"}]},
+            resolver=lambda n: "10.20.0.0/16" if n == "DC_NET" else None,
+        )
+        assert result == "10.20.0.0/16"
+
+    def test_resolver_returning_none_propagates(self):
+        """Resolver couldn't represent the address (fqdn/iprange/etc) → caller skips."""
+        from nautobot_ssot_fortinet.utils.fortios import fortios_route_destination_cidr
+
+        result = fortios_route_destination_cidr(
+            {"dstaddr": [{"name": "MAYBE_FQDN"}]},
+            resolver=lambda n: None,
+        )
+        assert result is None
+
+    def test_multi_entry_dstaddr_skipped_even_with_resolver(self):
+        """Multi-dstaddr would need N routes sharing seq_num — ambiguous, skip."""
+        from nautobot_ssot_fortinet.utils.fortios import fortios_route_destination_cidr
+
+        result = fortios_route_destination_cidr(
+            {"dstaddr": [{"name": "A"}, {"name": "B"}]},
+            resolver=lambda n: "10.0.0.0/24",
+        )
+        assert result is None
+
+    def test_dstaddr_takes_precedence_over_placeholder_dst(self):
+        """v3.2.6 (live-validated against fgt-dev): FortiOS 7.0.x sets
+        ``dst="0.0.0.0 0.0.0.0"`` as a placeholder when dstaddr is the
+        real destination. The resolver must NOT misread these as default
+        routes — dstaddr always wins when populated.
+        """
+        from nautobot_ssot_fortinet.utils.fortios import fortios_route_destination_cidr
+
+        called = []
+        # FortiOS 7.0.14 returns dstaddr as a string here, and dst as a
+        # 0.0.0.0 placeholder. Pre-v3.2.6 this would have returned
+        # "0.0.0.0/0" (default route) — completely wrong.
+        result = fortios_route_destination_cidr(
+            {"dst": "0.0.0.0 0.0.0.0", "dstaddr": "DC_NET"},
+            resolver=lambda n: called.append(n) or "10.20.0.0/16",
+        )
+        assert result == "10.20.0.0/16"
+        assert called == ["DC_NET"]
+
+    def test_dstaddr_string_form_FortiOS_70x(self):
+        """FortiOS 7.0.14 returns dstaddr as a plain string, not list-of-dict."""
+        from nautobot_ssot_fortinet.utils.fortios import fortios_route_destination_cidr
+
+        result = fortios_route_destination_cidr(
+            {"dstaddr": "MY_ADDR"},
+            resolver=lambda n: "203.0.113.0/24" if n == "MY_ADDR" else None,
+        )
+        assert result == "203.0.113.0/24"
+
+    def test_dstaddr_missing_name_field(self):
+        """Malformed dstaddr entry (no 'name' key) returns None safely."""
+        from nautobot_ssot_fortinet.utils.fortios import fortios_route_destination_cidr
+
+        result = fortios_route_destination_cidr(
+            {"dstaddr": [{"not-name": "X"}]},
+            resolver=lambda n: "1.2.3.4/32",
+        )
+        assert result is None
+
+
+class TestNormalizeDstaddrNames:
+    """v3.2.6 helper for the two FortiOS dstaddr shapes (string vs list-of-dict)."""
+
+    def test_string_form(self):
+        from nautobot_ssot_fortinet.utils.fortios import _normalize_dstaddr_names
+
+        assert _normalize_dstaddr_names("DC_VLANS") == ["DC_VLANS"]
+
+    def test_list_form_single(self):
+        from nautobot_ssot_fortinet.utils.fortios import _normalize_dstaddr_names
+
+        assert _normalize_dstaddr_names([{"name": "DC_VLANS"}]) == ["DC_VLANS"]
+
+    def test_list_form_multi(self):
+        from nautobot_ssot_fortinet.utils.fortios import _normalize_dstaddr_names
+
+        assert _normalize_dstaddr_names([{"name": "A"}, {"name": "B"}]) == ["A", "B"]
+
+    def test_none_or_empty(self):
+        from nautobot_ssot_fortinet.utils.fortios import _normalize_dstaddr_names
+
+        assert _normalize_dstaddr_names(None) == []
+        assert _normalize_dstaddr_names("") == []
+        assert _normalize_dstaddr_names([]) == []
+
+    def test_malformed_list_entries_filtered(self):
+        from nautobot_ssot_fortinet.utils.fortios import _normalize_dstaddr_names
+
+        # Mix of valid + invalid; only the valid one passes through
+        assert _normalize_dstaddr_names([{"name": "GOOD"}, {"not-name": "BAD"}, "string-item"]) == ["GOOD"]
 
     def test_empty_input_returns_none(self):
         from nautobot_ssot_fortinet.utils.fortios import fortios_route_destination_cidr
