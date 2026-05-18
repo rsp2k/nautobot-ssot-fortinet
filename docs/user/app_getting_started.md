@@ -2,6 +2,16 @@
 
 If you just want to sync a FortiGate into Nautobot in 10 minutes, this is for you.
 
+## What you'll have at the end
+
+After running the first sync, Nautobot's home dashboard will show synced
+counts in the **Security**, **Wireless**, and **IPAM** panels — pulled
+live from your FortiGate:
+
+![Nautobot home dashboard showing synced FortiGate data](../assets/screenshots/nautobot-home-synced.jpg)
+
+(Real screenshot from the dev stack — synced against a FortiWiFi-61E.)
+
 ## What you need before starting
 
 - A Nautobot instance with the integration installed
@@ -39,13 +49,23 @@ sudo systemctl restart nautobot-worker
 
 ## Step 3 — Enable + run the firewall pull Job
 
-**Extensibility → Jobs**:
+The integration registers five Jobs visible at **Apps → Single Source of
+Truth** (`/plugins/ssot/`) — two pull (data sources) and two push (data
+targets) plus a live-status diagnostic Job:
 
-1. Find **"FortiGate → Nautobot (firewall)"** → click the pencil → check
-   **Enabled** → save
-2. Click **Run Job**
-3. Pick `fgt-edge1` from the ExternalIntegration dropdown
-4. Leave **Dry run** checked for the first run — review the diff
+![SSoT dashboard showing all FortiGate sync Jobs](../assets/screenshots/ssot-dashboard.jpg)
+
+Then:
+
+1. **Extensibility → Jobs** — find **"FortiGate → Nautobot (firewall)"**
+   → click the pencil → check **Enabled** → save
+2. Click **Run Job** — you'll see the form below:
+
+   ![Job runner form with ExternalIntegration picker and dry-run option](../assets/screenshots/job-runner-form.jpg)
+
+3. Pick `fgt-edge1` from the **External integration** dropdown
+4. Leave **Dryrun** checked for the first run — review the diff before
+   any data hits Nautobot
 5. Click **Run Job Now**
 
 After a few seconds, browse to:
@@ -79,11 +99,28 @@ snapshot is attached for download.
 
 If you want Nautobot to drive FortiGate config:
 
-1. In Nautobot UI, edit an AddressObject (e.g. update its description)
-2. Enable **"Nautobot → FortiGate (firewall)"**
-3. Run with the same ExternalIntegration, dry-run first
+1. In Nautobot UI, edit any synced object:
+    - **AddressObject** — change the prefix, description, or rename
+    - **PolicyRule** — toggle action, log, or change source/destination
+      addresses
+    - **NATPolicyRule** — edit the IP value of the synthesized
+      `vip_*_mapped` address to redirect a VIP (v2.6+)
+2. Enable **"Nautobot → FortiGate (firewall)"** (and/or wireless)
+3. Run with the same ExternalIntegration, **Dryrun checked first**
 4. Apply when the diff looks correct
-5. Verify in the FortiGate web UI that the description changed
+5. Verify on the FortiGate web UI that the change landed
+
+Every push CRUD path (create/update/delete) across AddressObject,
+AddressObjectGroup, ServiceObject, ServiceObjectGroup, PolicyRule, and
+NATPolicyRule has been live-validated end-to-end against a real
+FortiGate. See the e2e scripts in `development/scripts/e2e_push_*.py`
+for the exact validation patterns.
+
+!!! note "Known FortiOS REST limitation"
+    VAP (WirelessNetwork) **delete** via REST is blocked by a FortiOS
+    quirk — VAP creates a dependent quarantine interface, and neither
+    can be deleted while the other exists. Use the FortiGate web UI's
+    VAP delete wizard for VAP removal. Create and update work via push.
 
 ## What to do when something looks wrong
 

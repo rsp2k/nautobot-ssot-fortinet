@@ -2,6 +2,14 @@
 
 Three end-to-end scenarios that show how the four Jobs combine.
 
+The integration registers all sync Jobs under one dashboard at
+**Apps → Single Source of Truth**:
+
+![SSoT dashboard listing all FortiGate sync Jobs](../assets/screenshots/ssot-dashboard.jpg)
+
+Pull (Data Sources) and push (Data Targets) directions are visible
+side-by-side — each Job is one click to configure and run.
+
 ## Use case 1 — Inventory & audit of a fleet of FortiGates
 
 **Goal:** centralize firewall config across many FortiGates into one Nautobot instance for inventory, audit, and cross-device queries.
@@ -48,15 +56,20 @@ The Job pulls from three FortiOS monitor endpoints and joins them by MAC:
 **Setup:**
 
 1. **First**, run the pull Job once to seed Nautobot with the FortiGate's current state. This establishes the baseline so subsequent pushes only sync intentional changes.
-2. Enable the **Nautobot → FortiGate (firewall)** Job.
-3. Edit AddressObjects, AddressObjectGroups, ServiceObjects, or ServiceObjectGroups in Nautobot's UI (or via REST/GraphQL).
-4. Run the push Job with the same `ExternalIntegration`. **Use dry-run first** — review the diff before applying.
+2. Enable the **Nautobot → FortiGate (firewall)** Job (and/or wireless).
+3. Edit objects in Nautobot's UI (or via REST/GraphQL):
+   - **AddressObject, AddressObjectGroup, ServiceObject, ServiceObjectGroup** — full CRUD
+   - **PolicyRule** — full CRUD with `source_interfaces` / `destination_interfaces` structured attrs (parsed from the description's `[srcintf=lan dstintf=wan1]` annotation)
+   - **NATPolicyRule** (VIP) — full CRUD; **editing the IP value of an existing `vip_*_mapped` AddressObject now propagates** to the FortiGate VIP's mappedip on push (v2.6+)
+   - **WirelessNetwork** (VAP) — create + update only (FortiOS REST blocks delete)
+4. Run the push Job with the same `ExternalIntegration`. **Use Dryrun first** — review the diff before applying.
 
 **What you get:**
 
-- New AddressObjects appear on the FortiGate via the REST API.
+- Edits in Nautobot propagate to the FortiGate via REST.
 - Operators get Nautobot's RBAC, change-log, and GraphQL API on top of the firewall config.
 - Combined with the pull Job, you can run *both* directions on schedule for full bidirectional reconciliation (caveat: pick which side wins on conflict).
+- Every push CRUD operation has a focused e2e test in `development/scripts/e2e_push_*.py` that exercises it end-to-end against a real FortiGate. Run `make -C development e2e-push-all` to validate your push paths after upgrade.
 
 !!! warning
     The push direction enables real config changes on the FortiGate. Always run the push Job in **dry-run mode** first (built-in BooleanVar on every SSoT Job). The dry run computes diffs without applying them so you can review what would change.

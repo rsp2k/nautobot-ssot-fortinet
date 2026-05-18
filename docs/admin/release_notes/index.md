@@ -4,6 +4,7 @@ Per-release notes for `nautobot-ssot-fortinet`. The project uses [CalVer](https:
 
 ## Versions
 
+- [v2026.05.18.8](version_2026.05.18.8.md) — Docs screenshots + dev-stack DNS modernization. No production-code changes.
 - [v2026.05.18.7](version_2026.05.18.7.md) — Remaining CRUD paths live-validated end-to-end. DELETE status checking. Surfaces VAP-delete FortiOS limitation.
 - [v2026.05.18.6](version_2026.05.18.6.md) — NAT update propagates from address-value-change. Editing a synth address's IP in Nautobot now updates the FortiGate VIP on push.
 - [v2026.05.18.5](version_2026.05.18.5.md) — Policy + NAT push live-validated end-to-end. Round-trip stability fixes (/32 ipmask normalization, annotation dedup).

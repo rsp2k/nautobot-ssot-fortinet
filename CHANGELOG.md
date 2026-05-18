@@ -3,6 +3,53 @@
 This project uses [CalVer](https://calver.org/) — versions are `YYYY.MM.DD`
 representing the date of release. Same-day fixes use `YYYY.MM.DD.N`.
 
+## 2026.05.18.8 — Docs screenshots + dev-stack DNS modernization (v2.7)
+
+Documentation polish + dev-stack convenience. No production code
+changes — every `src/` file is byte-identical to v2.7.
+
+### Docs
+
+- **Three live UI screenshots** captured via Playwright against the
+  dev stack and added to `docs/user/app_getting_started.md`:
+  - **Nautobot home dashboard** after sync — shows the synced counts in
+    Security / Wireless / IPAM panels (the "what success looks like"
+    hero shot)
+  - **SSoT dashboard** showing all 4 sync Jobs (2 pull + 2 push) and
+    the diagnostic live-status Job, side-by-side
+  - **Job runner form** with the External Integration picker, Dryrun
+    checkbox, and Vdom field visible — the form operators actually fill
+- `docs/user/app_use_cases.md` Use Case 3 (edit-and-push workflow)
+  updated to call out v2.6's edit-synth-address propagation explicitly,
+  plus the VAP-delete REST limitation from v2.7.
+- Getting Started Step 7 now lists every model that supports edit-and-
+  push, with the v2.6 / v2.7 capability notes inline.
+
+### Dev stack
+
+- `DOMAIN` in `development/.env` changed from `ssot-fortinet-dev.local`
+  to `ssot-fortinet-dev.l.warehack.ing`. The warehack.ing wildcard DNS
+  resolves automatically and Caddy gets a real ACME cert via Vultr
+  DNS-01 — no more `/etc/hosts` edits required.
+- Added `127.0.0.1:8080:8080` port mapping on the dev web container.
+  Useful for browser automation (Playwright, headless captures) in
+  environments where the wildcard DNS or ACME cert isn't available.
+  `ALLOWED_HOSTS` already included localhost so no Nautobot config
+  change was needed.
+- `CLAUDE.md` updated to reflect both changes.
+
+### Upgrade from v2026.05.18.7
+
+```bash
+pip install --upgrade nautobot-ssot-fortinet
+```
+
+No DB migration, no Job changes, no config changes. The docs site
+(RTD) will auto-rebuild from the new tag.
+
+If you're running the dev stack yourself: `make -C development up` will
+recreate the web container with the new label + port mapping.
+
 ## 2026.05.18.7 — Remaining CRUD live-validated; DELETE status checking (v2.6)
 
 Closes the "every push CRUD path has a focused live e2e test" gap from

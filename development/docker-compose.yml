@@ -92,6 +92,13 @@ services:
     networks:
       - internal
       - caddy
+    # Direct loopback port mapping useful for local screenshot/automation
+    # work that can't go through Caddy (e.g., Playwright in environments
+    # without the wildcard DNS / ACME setup). Bound to 127.0.0.1 only so
+    # it's not exposed beyond the host. Caddy remains the canonical
+    # ingress for normal use via `${DOMAIN}`.
+    ports:
+      - "127.0.0.1:8080:8080"
     labels:
       caddy: ${DOMAIN}
       caddy.reverse_proxy: "{{upstreams 8080}}"
