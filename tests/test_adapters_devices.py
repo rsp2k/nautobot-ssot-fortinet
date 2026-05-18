@@ -25,13 +25,34 @@ from nautobot_ssot_fortinet.diffsync.adapters.fortigate_devices import (
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def _client_with_interfaces(interfaces: list[dict], routes: list[dict] | None = None) -> MagicMock:
-    """Build a MagicMock client whose system.interface.get() returns the given list."""
+def _client_with_interfaces(
+    interfaces: list[dict],
+    routes: list[dict] | None = None,
+    serial: str = "FWF61E0000000000",
+) -> MagicMock:
+    """Build a MagicMock client whose system.interface.get() returns the given list.
+
+    v3.2.5+: ``_get_fortios_serial()`` now hits ``.fortigate.get()`` (raw
+    HTTP) and reads the ``serial`` field from the envelope JSON, NOT
+    ``.fortigate.get_result()`` which strips the envelope and was broken
+    against the real list-returning shape of ``system/interface``.
+    """
     c = MagicMock()
     c.cmdb.system.interface.get.return_value = interfaces
     c.cmdb.router.static.get.return_value = routes or []
-    # _get_fortios_serial uses .fortigate.get_result() — return a stable serial.
-    c.fortigate.get_result.return_value = {"serial": "FGT-TEST-12345"}
+
+    # Mock the raw .get() to return a response object with status_code=200
+    # and a .json() method returning the envelope shape FortiOS actually
+    # uses: top-level "serial" + "results" dict.
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = {
+        "serial": serial,
+        "version": "v7.0.14",
+        "build": 601,
+        "results": {"hostname": "test-fortigate", "alias": "test-fortigate"},
+    }
+    c.fortigate.get.return_value = response
     return c
 
 
@@ -123,6 +144,57 @@ class TestVlanInterfaceLoading:
         adapter.load()
         i = next(i for i in adapter.get_all("fortigate_interface") if i.name == "internal3")
         assert i.vlan_id is None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v3.2.5 — Device.serial extraction (closes v3.0 carryover bug)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class TestFortiosSerialExtraction:
+    """v3.2.5 fix for the v3.0 carryover where Device.serial was always empty.
+
+    Root cause was the old ``get_result("/cmdb/system/interface?count=1")``
+    path: ``get_result()`` strips the envelope (where ``serial`` lives) AND
+    crashes on ``dict(results)`` because ``system/interface`` returns a
+    LIST. The BLE001-suppressed except hid the crash silently.
+    """
+
+    def test_serial_extracted_from_envelope(self, base_adapter_kwargs):
+        """The fix: hit raw .get('/cmdb/system/global') and read envelope.serial."""
+        client = _client_with_interfaces([], serial="FWF61E1234567890")
+        adapter = FortiGateDevicesAdapter(client=client, **base_adapter_kwargs)
+        adapter.load()
+        dev = next(iter(adapter.get_all("fortigate_device")))
+        assert dev.serial == "FWF61E1234567890"
+
+    def test_missing_serial_returns_empty_string(self, base_adapter_kwargs):
+        """If the envelope has no serial key, return '' (not None, not a crash)."""
+        client = _client_with_interfaces([])
+        # Override the canned envelope to drop the serial key
+        client.fortigate.get.return_value.json.return_value = {"version": "v7.0.14"}
+        adapter = FortiGateDevicesAdapter(client=client, **base_adapter_kwargs)
+        adapter.load()
+        dev = next(iter(adapter.get_all("fortigate_device")))
+        assert dev.serial == ""
+
+    def test_non_200_status_returns_empty(self, base_adapter_kwargs):
+        """If system/global returns 4xx/5xx, fall back to empty serial."""
+        client = _client_with_interfaces([])
+        client.fortigate.get.return_value.status_code = 500
+        adapter = FortiGateDevicesAdapter(client=client, **base_adapter_kwargs)
+        adapter.load()
+        dev = next(iter(adapter.get_all("fortigate_device")))
+        assert dev.serial == ""
+
+    def test_get_raises_handled_gracefully(self, base_adapter_kwargs):
+        """If the HTTP call itself raises (network drop, timeout), handle it."""
+        client = _client_with_interfaces([])
+        client.fortigate.get.side_effect = RuntimeError("network unreachable")
+        adapter = FortiGateDevicesAdapter(client=client, **base_adapter_kwargs)
+        adapter.load()  # Should not raise
+        dev = next(iter(adapter.get_all("fortigate_device")))
+        assert dev.serial == ""
 
 
 # ──────────────────────────────────────────────────────────────────────────────

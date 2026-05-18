@@ -3,6 +3,90 @@
 This project uses [CalVer](https://calver.org/) — versions are `YYYY.MM.DD`
 representing the date of release. Same-day fixes use `YYYY.MM.DD.N`.
 
+## 2026.05.18.13.5 — Device.serial extraction fix (closes v3.0 carryover bug)
+
+The known-since-v3.0 empty-serial bug is fixed. Every Device created by
+the SSoT pull Job now gets its real FortiOS serial number populated.
+
+### Two-failure-mode bug
+
+The v3.0 `_get_fortios_serial()` used:
+```python
+raw = self.client.fortigate.get_result("/api/v2/cmdb/system/interface?count=1")
+return raw.get("serial", "") or ""
+```
+
+Both halves were wrong:
+
+1. **`get_result()` strips the response envelope** — but `serial` lives
+   IN the envelope (alongside `version`, `build`, `vdom`), not in
+   `results`. So even if the call had succeeded, `raw["serial"]` would
+   have been `KeyError` on a dict that didn't contain it.
+2. **`get_result()` crashes on `system/interface`** — its implementation
+   does `dict(data.get("results"))`, and `system/interface` returns a
+   LIST of interface dicts. `dict(list_of_dicts_with_many_keys)` raises
+   `ValueError: dictionary update sequence element #0 has length N; 2
+   is required`. The `BLE001`-suppressed `except` swallowed the crash
+   silently, returning `""`.
+
+Result: **every Device created by v3.0, v3.1, v3.2.0–v3.2.4 had `serial=""`.**
+
+### Fix
+
+Hit `system/global` directly via raw `.get()` (NOT `.get_result()`),
+read the envelope's `serial` field:
+
+```python
+response = self.client.fortigate.get("/api/v2/cmdb/system/global")
+if getattr(response, "status_code", None) != 200:
+    return ""
+envelope = response.json()
+return envelope.get("serial", "") or ""
+```
+
+`system/global` is the right endpoint because:
+- It always exists on every FortiOS version we support (6.x–7.x)
+- Its `results` is a single dict (not a list)
+- Its envelope includes `serial`, `version`, `build` — everything we'd
+  want for Device identity
+
+### Live-validated against the dev FortiWiFi-61E
+
+After running the Devices Job on v3.2.5:
+```
+Device.serial = '<populated with real FortiOS serial>'
+```
+
+Pre-fix this was always `''`.
+
+### Tests
+
+- **254 unit tests** (was 250 in v3.2.4). +4 covering:
+  - serial extracted from envelope happy path
+  - envelope without serial key → returns `''`
+  - non-200 status → returns `''`
+  - HTTP call raises → returns `''` and doesn't crash the load
+- Tests use a placeholder serial format (`FWF61E0000000000`) — never
+  real device data.
+
+### Backwards-compat note
+
+If you upgrade from any v3.0 / v3.1 / v3.2.0–v3.2.4 with an existing
+Nautobot Device record whose serial is empty, the next Devices Job
+run will populate it. The diff will show
+`update fortigate_device serial: '' → '<actual-serial>'` — that's
+expected, not drift.
+
+### Upgrade
+
+```bash
+pip install --upgrade nautobot-ssot-fortinet  # = 2026.5.18.13.5
+sudo systemctl restart nautobot nautobot-worker
+```
+
+Re-run the `FortiGate -> Nautobot (device + interfaces)` Job to
+refresh `Device.serial` for any previously-empty records.
+
 ## 2026.05.18.13.4 — Audit polish; first version pushed to PyPI (v3.2 series)
 
 Strict follow-up to v3.2.3. The CHANGELOG entry for v3.2.3 *described*

@@ -101,22 +101,36 @@ class FortiGateDevicesAdapter(Adapter):
         )
 
     def _get_fortios_serial(self) -> str:
-        """Extract the FortiOS serial from any cmdb response envelope.
+        """Extract the FortiOS serial from ``cmdb/system/global``.
 
-        Every fortigate-api response includes ``serial`` at the top level.
-        We grab it from the raw HTTP response on the next call we make.
+        FortiOS includes the device serial as a top-level envelope field
+        (alongside ``version``, ``build``, ``vdom``, etc.) on every cmdb
+        REST response. We hit ``system/global`` specifically because its
+        ``results`` payload is a small single dict — safest endpoint to
+        avoid envelope-strip helpers that assume a list of records.
+
+        v3.0 used ``get_result("/cmdb/system/interface?count=1")`` which
+        had two failure modes:
+
+        1. ``get_result()`` strips the envelope, so the serial — which
+           lives in the envelope, NOT in ``results`` — was unreachable.
+        2. The helper does ``dict(data.get("results"))`` on the response;
+           ``system/interface`` returns a LIST under ``results``, and
+           ``dict(list_of_dicts_with_many_keys)`` raises ValueError. The
+           BLE001-suppressed except caught the crash silently, so every
+           v3.0 + v3.1 + v3.2.x sync wrote ``serial=""``.
+
+        v3.2.5 uses raw ``.get()`` against the underlying session so the
+        full envelope (including ``serial``) is available unconditionally.
         """
         try:
-            # The connector strips the envelope by default; we need raw
-            # access via the underlying session. Call fortigate.get directly
-            # with a minimal-payload URL so the response is small.
-            raw = self.client.fortigate.get_result("/api/v2/cmdb/system/interface?count=1")
-            # Some FortiOS versions wrap differently. Just return empty
-            # if we can't extract — operator can set via the form var
-            # if needed later.
-            if isinstance(raw, dict):
-                return raw.get("serial", "") or ""
-            return ""
+            response = self.client.fortigate.get("/api/v2/cmdb/system/global")
+            if getattr(response, "status_code", None) != 200:
+                return ""
+            envelope = response.json()
+            if not isinstance(envelope, dict):
+                return ""
+            return envelope.get("serial", "") or ""
         except Exception as e:  # noqa: BLE001
             if self.job:
                 self.job.logger.warning(f"Could not extract FortiGate serial: {e}")
