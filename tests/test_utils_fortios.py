@@ -762,7 +762,7 @@ class TestPlaceholderFqdn:
     def test_sanitizes_spaces_to_dashes(self):
         from nautobot_ssot_fortinet.utils.fortios import fortios_placeholder_fqdn
 
-        assert fortios_placeholder_fqdn("mac", "Kevins Work Phone") == "kevins-work-phone.mac.fortios.invalid"
+        assert fortios_placeholder_fqdn("mac", "Lab IoT Device") == "lab-iot-device.mac.fortios.invalid"
 
     def test_dynamic_category(self):
         from nautobot_ssot_fortinet.utils.fortios import fortios_placeholder_fqdn

@@ -3,6 +3,68 @@
 This project uses [CalVer](https://calver.org/) — versions are `YYYY.MM.DD`
 representing the date of release. Same-day fixes use `YYYY.MM.DD.N`.
 
+## 2026.05.18.13.3 — Pre-publish PII audit findings (v3.2 series)
+
+Pre-publish Stage 2 audit (per CLAUDE.md python.md rules) caught two
+PII-class issues before the first push to PyPI. **No `uv publish` was
+ever called against v3.1, v3.2, v3.2.1, or v3.2.2** — those exist only
+as git tags + local commits. v3.2.3 is the first version that will
+land on PyPI.
+
+### What the audit caught
+
+1. **`CLAUDE.md.tmp.*` Claude-scratch files shipping in the sdist.**
+   The existing `[tool.hatch.build.targets.sdist] exclude = ["CLAUDE.md", ...]`
+   was an exact match — the `.tmp.*` variants slipped through. One real
+   leak: `CLAUDE.md.tmp.1766753.ab9ad781e782` (9 KB) was in
+   `nautobot_ssot_fortinet-2026.5.18.13.2.tar.gz`. Contains operator-
+   private project notes. Removed from repo + added `CLAUDE.md.tmp.*`
+   glob to the exclude list.
+2. **Operator-name leak in a doctest example.** The
+   `fortios_placeholder_fqdn` docstring used `"Kevins Work Phone"`
+   verbatim from an operator's prod log. Sanitized to `"Lab IoT Device"`.
+   Matching unit test updated.
+
+### Structural defense added
+
+```toml
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "CLAUDE.md",
+    "CLAUDE.md.tmp.*",   # NEW — glob to catch future scratch files
+    "/artifacts/",       # NEW — container-side test artifacts (screenshots, logs)
+    ...
+]
+```
+
+### Lesson
+
+CLAUDE.md python.md says it plainly: "the Stage 2 unpacked-sdist grep
+is the *authoritative* check before `uv publish`. Empty result = safe
+to publish. Anything else = scrub the source, rebuild, re-audit."
+
+This release IS the worked example of that rule firing. The audit
+caught both issues; the fixes shipped before any artifact reached
+PyPI. Total cost of the catch: one version bump, one rebuild cycle.
+Cost if missed: yanked-but-immortal PyPI artifact + email to
+admin@pypi.org for removal.
+
+### Tests
+
+- **250 unit tests** still passing.
+- Sanitized doctest still demonstrates the same sanitization behavior
+  (spaces → dashes); just with a non-PII example string.
+
+### Upgrade
+
+```bash
+pip install --upgrade nautobot-ssot-fortinet  # = 2026.5.18.13.3
+sudo systemctl restart nautobot nautobot-worker
+```
+
+No migration, no schema change. Includes all v3.1 + v3.2 + v3.2.1 +
+v3.2.2 capabilities and fixes since none of those shipped to PyPI.
+
 ## 2026.05.18.13.2 — HOTFIX: blackhole field misclassification (v3.1 regression)
 
 **Bug present in v3.1 (2026.05.18.12), v3.2 (2026.05.18.13), and v3.2.1

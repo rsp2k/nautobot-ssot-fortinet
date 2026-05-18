@@ -738,8 +738,8 @@ def fortios_placeholder_fqdn(category: str, name: str) -> str:
 
     >>> fortios_placeholder_fqdn("mac", "ipcam01")
     'ipcam01.mac.fortios.invalid'
-    >>> fortios_placeholder_fqdn("mac", "Kevins Work Phone")
-    'kevins-work-phone.mac.fortios.invalid'
+    >>> fortios_placeholder_fqdn("mac", "Lab IoT Device")
+    'lab-iot-device.mac.fortios.invalid'
     >>> fortios_placeholder_fqdn("dynamic", "EMS_ALL_UNKNOWN_CLIENTS")
     'ems-all-unknown-clients.dynamic.fortios.invalid'
     >>> fortios_placeholder_fqdn("geography", "US")

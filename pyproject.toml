@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nautobot-ssot-fortinet"
-version = "2026.5.18.13.2"
+version = "2026.5.18.13.3"
 description = "Nautobot SSoT integration for Fortinet (FortiGate firewall + FortiAP wireless, bidirectional sync)."
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
@@ -70,11 +70,13 @@ packages = ["src/nautobot_ssot_fortinet"]
 [tool.hatch.build.targets.sdist]
 exclude = [
     "CLAUDE.md",
+    "CLAUDE.md.tmp.*",  # Claude scratch backups — caught leaking in v3.2.2 audit
     ".env",
     ".env.local",
     ".mcp.json",
     "/local/",
     "/development/",
+    "/artifacts/",  # Container-side test artifacts (screenshots, logs)
     ".pytest_cache/",
     ".ruff_cache/",
     "dist/",
