@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from nautobot.apps.ui import NavMenuAddButton, NavMenuItem, NavMenuTab
+from nautobot.apps.ui import NavMenuAddButton, NavMenuGroup, NavMenuItem, NavMenuTab
 
 menu_items = (
     NavMenuTab(
         name="Plugins",
         groups=(
-            {
-                "name": "Fortinet SSoT",
-                "weight": 1000,
-                "items": (
+            NavMenuGroup(
+                name="Fortinet SSoT",
+                weight=1000,
+                items=(
                     NavMenuItem(
                         link="plugins:nautobot_ssot_fortinet:fortinetstaticroute_list",
                         name="Static Routes",
@@ -25,7 +25,7 @@ menu_items = (
                         ),
                     ),
                 ),
-            },
+            ),
         ),
     ),
 )

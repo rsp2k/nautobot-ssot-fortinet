@@ -3,6 +3,76 @@
 This project uses [CalVer](https://calver.org/) — versions are `YYYY.MM.DD`
 representing the date of release. Same-day fixes use `YYYY.MM.DD.N`.
 
+## 2026.05.18.13.1 — HOTFIX: navigation.py NavMenuGroup type error (v3.1 regression)
+
+**Crash bug present in v3.1 (2026.05.18.12) and the just-released v3.2
+(2026.05.18.13).** Any deployment that loaded the app with v3.1+ saw
+the Nautobot worker container restart-loop with:
+
+```
+TypeError: All groups defined in a tab must be an instance of NavMenuGroup
+  File "src/nautobot_ssot_fortinet/navigation.py", line 8, in <module>
+    NavMenuTab(...)
+```
+
+Caught when actually starting the dev stack and observing the worker
+crash. Not caught by unit tests because `conftest.py` stubs out
+`nautobot.apps.ui` to a MagicMock — type validation never fires.
+
+### Root cause
+
+`v3.1`'s `navigation.py` passed bare dicts to `NavMenuTab(groups=...)`,
+patterning on the `nautobot_ssot.integrations.itential` reference —
+but that reference uses a different module (`NavMenuItem` at the top
+level, not wrapped in `NavMenuTab`). The actual Nautobot 3.x API
+requires `NavMenuGroup(...)` instances when nesting under `NavMenuTab`.
+
+### Fix
+
+One-line import + 3-line refactor in `src/nautobot_ssot_fortinet/navigation.py`:
+
+```python
+from nautobot.apps.ui import (
+    NavMenuAddButton, NavMenuGroup, NavMenuItem, NavMenuTab,  # +NavMenuGroup
+)
+
+menu_items = (
+    NavMenuTab(name="Plugins", groups=(
+        NavMenuGroup(name="Fortinet SSoT", weight=1000, items=(...))  # was a bare dict
+    ))
+)
+```
+
+### Why this is its own release
+
+v3.2 (2026.05.18.13) was already committed before the dev-stack
+validation surfaced this. Per the project's hotfix convention
+(`YYYY.MM.DD.N.M`), this ships as a post-release of v3.2 rather than
+contaminating the v3.2 changelog with an unrelated bug fix.
+
+### Live-verified
+
+Restarted the dev container with the fix, worker came up healthy
+within 20 seconds, migration applied cleanly, model queries pass,
+URL routing resolves.
+
+### Lesson — should we have caught this earlier?
+
+The unit-test conftest stubs `nautobot.apps.ui` to MagicMock so any
+constructor call accepts any args without validation. Adding a real
+import check for navigation/views/urls modules would catch this class
+of bug. Tracked as a v3.3 backlog item.
+
+### Upgrade from any v3.1 / v3.2
+
+```bash
+pip install --upgrade nautobot-ssot-fortinet
+sudo systemctl restart nautobot nautobot-worker
+```
+
+No migration, no Job changes. Operators who deployed v3.1 or v3.2 and
+saw worker restart-loop should upgrade immediately.
+
 ## 2026.05.18.13 — FortiOS shape coverage from Kevin's prod sync (v3.2)
 
 Same-day follow-up to v3.1, driven by **operator-reported gaps** when
