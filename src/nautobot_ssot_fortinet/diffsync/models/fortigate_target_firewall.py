@@ -114,7 +114,10 @@ class FortiGateAddressObject(AddressObject):
     def delete(self):
         """DELETE the address from FortiGate."""
         original_name = _unmangle(self.name, self.adapter.hostname, self.adapter.vdom)
-        self.adapter.client.cmdb.firewall.address.delete(uid=original_name)
+        check_fortios_response(
+            self.adapter.client.cmdb.firewall.address.delete(uid=original_name),
+            label=f"address.delete {original_name!r}",
+        )
         if self.adapter.job:
             self.adapter.job.logger.info(f"  - deleted from FortiGate: {original_name!r}")
         super().delete()
@@ -210,7 +213,10 @@ class FortiGateAddressObjectGroup(AddressObjectGroup):
 
     def delete(self):
         original = _unmangle(self.name, self.adapter.hostname, self.adapter.vdom)
-        self.adapter.client.cmdb.firewall.addrgrp.delete(uid=original)
+        check_fortios_response(
+            self.adapter.client.cmdb.firewall.addrgrp.delete(uid=original),
+            label=f"addrgrp.delete {original!r}",
+        )
         if self.adapter.job:
             self.adapter.job.logger.info(f"  - deleted group from FortiGate: {original!r}")
         super().delete()
@@ -272,7 +278,10 @@ class FortiGateServiceObject(ServiceObject):
         return super().update(attrs)
 
     def delete(self):
-        self.adapter.client.cmdb.firewall_service.custom.delete(uid=self.name)
+        check_fortios_response(
+            self.adapter.client.cmdb.firewall_service.custom.delete(uid=self.name),
+            label=f"service.delete {self.name!r}",
+        )
         if self.adapter.job:
             self.adapter.job.logger.info(f"  - deleted service from FortiGate: {self.name!r}")
         super().delete()
@@ -326,7 +335,10 @@ class FortiGateServiceObjectGroup(ServiceObjectGroup):
 
     def delete(self):
         original = _unmangle(self.name, self.adapter.hostname, self.adapter.vdom)
-        self.adapter.client.cmdb.firewall_service.group.delete(uid=original)
+        check_fortios_response(
+            self.adapter.client.cmdb.firewall_service.group.delete(uid=original),
+            label=f"service-group.delete {original!r}",
+        )
         if self.adapter.job:
             self.adapter.job.logger.info(f"  - deleted service group from FortiGate: {original!r}")
         super().delete()
@@ -492,7 +504,10 @@ class FortiGatePolicyRule(PolicyRule):
         policyid = _parse_policyid(self.name)
         if policyid is None:
             return super().delete()
-        self.adapter.client.cmdb.firewall.policy.delete(uid=str(policyid))
+        check_fortios_response(
+            self.adapter.client.cmdb.firewall.policy.delete(uid=str(policyid)),
+            label=f"policy.delete policyid={policyid}",
+        )
         if self.adapter.job:
             self.adapter.job.logger.info(f"  - deleted policy {policyid} from FortiGate")
         super().delete()
@@ -700,7 +715,10 @@ class FortiGateNATPolicyRule(NATPolicyRule):
         vip_name = self.name.rsplit("__nat_rule_", 1)[-1]
         if vip_name == self.name:
             return super().delete()
-        self.adapter.client.cmdb.firewall.vip.delete(uid=vip_name)
+        check_fortios_response(
+            self.adapter.client.cmdb.firewall.vip.delete(uid=vip_name),
+            label=f"vip.delete {vip_name!r}",
+        )
         if self.adapter.job:
             self.adapter.job.logger.info(f"  - deleted VIP {vip_name!r} from FortiGate")
         super().delete()

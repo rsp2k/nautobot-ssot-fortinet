@@ -3,6 +3,86 @@
 This project uses [CalVer](https://calver.org/) — versions are `YYYY.MM.DD`
 representing the date of release. Same-day fixes use `YYYY.MM.DD.N`.
 
+## 2026.05.18.7 — Remaining CRUD live-validated; DELETE status checking (v2.6)
+
+Closes the "every push CRUD path has a focused live e2e test" gap from
+the v2.5 audit. Five new e2e scripts cover AddressObject,
+AddressObjectGroup, ServiceObject, ServiceObjectGroup, and
+WirelessNetwork (VAP). All seven DELETE callsites now check FortiOS
+HTTP status — silent delete failures (the symptom that bit us in v2.4
+for create/update) can no longer mask issues.
+
+### New e2e scripts in `development/scripts/`
+
+| Script | Validates | Makefile |
+|---|---|---|
+| `e2e_push_address.py` | AddressObject CRUD | `make e2e-push-address` |
+| `e2e_push_addrgrp.py` | AddressObjectGroup CRUD (M2M change) | `make e2e-push-addrgrp` |
+| `e2e_push_service.py` | ServiceObject CRUD | `make e2e-push-service` |
+| `e2e_push_svcgrp.py` | ServiceObjectGroup CRUD (M2M change) | `make e2e-push-svcgrp` |
+| `e2e_push_vap.py` | WirelessNetwork CREATE + UPDATE | `make e2e-push-vap` |
+
+Plus `make e2e-push-all` runs every push e2e script in sequence.
+
+### `check_fortios_response()` now wraps DELETE callsites
+
+v2.4 wrapped create/update. v2.7 closes the gap for the remaining 7
+delete callsites (`firewall.address`, `firewall.addrgrp`,
+`firewall_service.custom`, `firewall_service.group`, `firewall.policy`,
+`firewall.vip`, `wireless_controller.vap`). If FortiOS rejects a
+delete, we now raise `FortiOSAPIError` with the FortiOS error code
+and cli_error instead of silently logging "Deleted successfully."
+
+### FortiOS quirks surfaced during validation
+
+Both worth documenting in operator-facing docs (planned v2.8):
+
+- **VAP DELETE via REST is fundamentally broken in FortiOS.** Creating
+  a VAP auto-creates a dependent quarantine interface
+  (`wqtn.<vlanid>.<truncated-vap-name>`). When you try to delete the
+  VAP, FortiOS returns error -23: "Vap quarantine interface ... is in
+  use." When you try to delete the quarantine interface first, FortiOS
+  returns -23: "The entry is used by other 1 entries." Circular
+  dependency, no REST workaround. **Operators must use the FortiGate
+  web UI's VAP delete wizard** which handles the dependency teardown.
+  `e2e_push_vap.py`'s DELETE phase is documented and skipped.
+
+- **The `internal` interface on FortiWiFi/FortiGate-D devices is a
+  switch-parent**, not a usable policy endpoint. Use `internal1`-
+  `internal7` (or define a zone). Hit during e2e_push_policy work in
+  v2.5 — now documented.
+
+### Tests
+
+- 202 unit tests still passing (no test changes needed; the new e2e
+  scripts are integration tests, not unit tests).
+
+### Live-validated end-to-end against FortiWiFi-61E
+
+| Path | CREATE | UPDATE | DELETE |
+|---|---|---|---|
+| AddressObject | ✓ | ✓ (prefix change) | ✓ |
+| AddressObjectGroup | ✓ | ✓ (M2M add) | ✓ |
+| ServiceObject | ✓ | ✓ (description) | ✓ |
+| ServiceObjectGroup | ✓ | ✓ (M2M add) | ✓ |
+| WirelessNetwork (VAP) | ✓ | ✓ (enabled toggle) | ⚠ FortiOS REST limitation |
+| PolicyRule | ✓ (v2.4) | ✓ (v2.4) | ✓ (v2.4) |
+| NATPolicyRule | ✓ (v2.4/2.5) | ✓ + value-change (v2.4/2.6) | ✓ (v2.4) |
+| RadioProfile / wtp-profile | ✓ (v2.4) | n/a | n/a |
+
+### Upgrade from v2026.05.18.6
+
+```bash
+pip install --upgrade nautobot-ssot-fortinet
+nautobot-server collectstatic --no-input
+sudo systemctl restart nautobot nautobot-worker
+```
+
+No schema changes. No new Jobs. The behavior change is: previously-
+silent delete failures will now raise `FortiOSAPIError`. If you depend
+on those silent failures somehow (you shouldn't), you'd see surfaced
+errors — investigate the FortiOS cli_error in the exception message.
+
 ## 2026.05.18.6 — NAT update propagates from address-value-change (v2.5)
 
 Closes the v2.5 deferred design question. Editing the IP of an existing

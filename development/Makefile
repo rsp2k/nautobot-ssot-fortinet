@@ -85,6 +85,23 @@ e2e-push-policy:
 e2e-push-nat:
 	$(DC) exec $(WEB) nautobot-server shell_plus --quiet-load --command "exec(open('/opt/nautobot/jobs/dev_scripts/e2e_push_nat.py').read()); run()"
 
+e2e-push-address:
+	$(DC) exec $(WEB) nautobot-server shell_plus --quiet-load --command "exec(open('/opt/nautobot/jobs/dev_scripts/e2e_push_address.py').read()); run()"
+
+e2e-push-addrgrp:
+	$(DC) exec $(WEB) nautobot-server shell_plus --quiet-load --command "exec(open('/opt/nautobot/jobs/dev_scripts/e2e_push_addrgrp.py').read()); run()"
+
+e2e-push-service:
+	$(DC) exec $(WEB) nautobot-server shell_plus --quiet-load --command "exec(open('/opt/nautobot/jobs/dev_scripts/e2e_push_service.py').read()); run()"
+
+e2e-push-svcgrp:
+	$(DC) exec $(WEB) nautobot-server shell_plus --quiet-load --command "exec(open('/opt/nautobot/jobs/dev_scripts/e2e_push_svcgrp.py').read()); run()"
+
+e2e-push-vap:
+	$(DC) exec $(WEB) nautobot-server shell_plus --quiet-load --command "exec(open('/opt/nautobot/jobs/dev_scripts/e2e_push_vap.py').read()); run()"
+
+e2e-push-all: e2e-push-address e2e-push-addrgrp e2e-push-service e2e-push-svcgrp e2e-push-policy e2e-push-nat e2e-push-wtp e2e-push-vap
+
 check-navs:
 	$(DC) exec $(WEB) nautobot-server shell_plus --quiet-load -c "\
 from django.apps import apps; \

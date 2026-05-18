@@ -94,7 +94,10 @@ class FortiGateWirelessNetwork(WirelessNetwork):
     def delete(self):
         """DELETE the VAP from FortiGate."""
         original_name = _unmangle(self.name, self.adapter.hostname, self.adapter.vdom)
-        self.adapter.client.cmdb.wireless_controller.vap.delete(uid=original_name)
+        check_fortios_response(
+            self.adapter.client.cmdb.wireless_controller.vap.delete(uid=original_name),
+            label=f"vap.delete {original_name!r}",
+        )
         if self.adapter.job:
             self.adapter.job.logger.info(f"  - deleted VAP from FortiGate: {original_name!r}")
         super().delete()
