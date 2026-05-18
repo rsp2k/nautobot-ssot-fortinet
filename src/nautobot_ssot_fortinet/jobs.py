@@ -478,6 +478,10 @@ class FortiGateFirewallDataTarget(DataTarget):
                 self.diff.remove_unprocessed_children(top, "-")
             self.logger.info("Additive-only mode: any FortiGate records absent from Nautobot were NOT deleted.")
 
+        # v2.2+: expose the source adapter on the target so model.create()
+        # methods can do sibling aggregation (mirrors wireless Job).
+        self.target_adapter.source_adapter = self.source_adapter
+
         # Re-open the client for the sync phase (the load() phase closed it).
         # The target_adapter's model classes call self.adapter.client — so
         # we re-attach a fresh logged-in client before sync_from runs.
@@ -558,6 +562,9 @@ class FortiGateWirelessDataTarget(DataTarget):
             for top in self.target_adapter.top_level:
                 self.diff.remove_unprocessed_children(top, "-")
             self.logger.info("Additive-only mode: any FortiGate records absent from Nautobot were NOT deleted.")
+        # v2.2+: expose the source adapter on the target so model.create()
+        # methods can do sibling aggregation (used by wtp-profile create).
+        self.target_adapter.source_adapter = self.source_adapter
         with build_client(self.external_integration) as client:
             self.target_adapter.client = client
             super().execute_sync()

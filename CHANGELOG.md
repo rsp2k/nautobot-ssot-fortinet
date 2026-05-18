@@ -3,6 +3,81 @@
 This project uses [CalVer](https://calver.org/) — versions are `YYYY.MM.DD`
 representing the date of release. Same-day fixes use `YYYY.MM.DD.N`.
 
+## 2026.05.18.3 — wtp-profile CREATE via sibling aggregation (v2.2)
+
+Fourth release today. Closes the last remaining CREATE gap from v2.1:
+**RadioProfile push can now create the parent wtp-profile from scratch**
+when it doesn't yet exist on the FortiGate. Push is now full-CRUD across
+every model.
+
+### Added
+
+- **`FortiGateRadioProfile.create()` aggregates siblings.** When DiffSync
+  invokes `create()` for a new RadioProfile and the parent wtp-profile
+  doesn't exist on the FortiGate, the model now reaches into the source
+  adapter, collects ALL RadioProfiles that share the same
+  `original_profile_name`, and POSTs one combined wtp-profile payload
+  with all `radio-N` subfields populated at once. Subsequent sibling
+  `create()` calls notice the wtp-profile is now present and become
+  per-radio `update()` calls — the typical FortiOS partial-update path.
+- **Source adapter hand-off in push Jobs.** Both push Jobs
+  (`FortiGateFirewallDataTarget`, `FortiGateWirelessDataTarget`) now
+  stash `self.target_adapter.source_adapter = self.source_adapter`
+  right before `execute_sync()`. This is what makes sibling aggregation
+  observable from inside model `create()` methods. The firewall side
+  doesn't need it today, but the symmetry keeps the pattern discoverable.
+- **5 new unit tests** in `tests/test_models_target_wireless.py`
+  covering all three branches of `FortiGateRadioProfile.create()`:
+  missing `original_profile_name`, target sibling exists (partial update
+  path), source aggregation with 2+ radios, source aggregation with 1
+  radio, missing source adapter (warn + skip).
+
+### Design notes
+
+- **Default `platform-mode: "FortiAP-tunnel-mode"`.** The wtp-profile's
+  `platform-mode` field doesn't have a per-radio equivalent in Nautobot,
+  so we default to the most common managed-FortiAP value. Operators
+  running mesh / bridge / local-flex modes override on the FortiGate UI
+  after first sync — once set there, the value sticks (we don't push it
+  on per-radio updates).
+- **Why aggregation in `create()` and not in the adapter.** DiffSync
+  emits per-record `create()` calls. Pre-aggregating at the adapter
+  level would have meant doing FortiOS writes outside the diff machinery
+  — losing dry-run support, diff summaries, and progress logs. Doing it
+  in `create()` keeps everything inside the DiffSync orchestration loop.
+
+### Tests
+
+- **188 unit tests** total (was 183 in v2.1). +5 for sibling aggregation.
+- All ruff lint + format clean.
+
+### Workflow now unlocked
+
+Operators can create a brand-new wireless profile entirely in Nautobot:
+
+```
+   Nautobot UI: Create RadioProfile("guest", radio_index=1, freq=2.4GHz, ...)
+                Create RadioProfile("guest", radio_index=2, freq=5GHz, ...)
+        ↓
+   Run "Nautobot → FortiGate (wireless)" Job (dry-run first!)
+        ↓
+   FortiGate has new wtp-profile "guest" with radio-1 + radio-2 populated.
+```
+
+Pre-v2.2 workaround: create the wtp-profile shell on the FortiGate UI
+first, then push the RadioProfiles. No longer needed.
+
+### Upgrade from v2.1
+
+```bash
+pip install --upgrade nautobot-ssot-fortinet
+nautobot-server collectstatic --no-input
+sudo systemctl restart nautobot nautobot-worker
+```
+
+No new Jobs (still 5). No schema changes. No new DiffSync attrs. The
+RadioProfile push path is simply more capable now.
+
 ## 2026.05.18.2 — PolicyRule + NATPolicyRule CREATE (v2.1)
 
 Third release today. Removes the v2.0 deferral of CREATE for policies

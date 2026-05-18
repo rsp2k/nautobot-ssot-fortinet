@@ -118,22 +118,98 @@ def _vap_payload(name: str, attrs: dict[str, Any]) -> dict | None:
 
 
 class FortiGateRadioProfile(RadioProfile):
-    """UPDATE-only push of a per-radio slice of a FortiOS wtp-profile.
+    """Push of a per-radio slice of a FortiOS wtp-profile.
 
-    The parent wtp-profile must already exist on the device. ``create()``
-    is a no-op with a warning. ``delete()`` is also a no-op (you can't
-    delete a single radio from a multi-radio profile; you'd delete the
-    whole wtp-profile, which is not modeled here).
+    Two paths depending on whether the parent wtp-profile already exists
+    on the target FortiGate:
+
+    1. **wtp-profile exists on target** — partial update only (``radio-N``
+       payload sent to the existing profile). This was the v2.0 behavior.
+
+    2. **wtp-profile doesn't exist on target** (v2.2+) — sibling
+       aggregation: the first sibling create() call collects all
+       RadioProfiles for the same ``original_profile_name`` from the
+       SOURCE adapter's store, builds a combined wtp-profile payload
+       with all radios populated, and POSTs the whole profile. Later
+       sibling create() calls detect the wtp-profile is now in the
+       target store and become no-ops.
+
+    Requires the Job to stash ``source_adapter`` on the target adapter
+    before ``execute_sync()`` runs.
+
+    ``delete()`` is still a no-op (can't delete a single radio from a
+    multi-radio profile; delete the whole wtp-profile on the FortiGate UI).
     """
 
     @classmethod
     def create(cls, adapter, ids: dict[str, Any], attrs: dict[str, Any]):
-        """No-op — wtp-profile creation isn't supported on push."""
+        """Per-radio update if the wtp-profile exists, else aggregated create."""
+        profile_name = attrs.get("original_profile_name")
+        if not profile_name:
+            if adapter.job:
+                adapter.job.logger.warning(f"Skipping RadioProfile {ids['name']!r}: no original_profile_name")
+            return super().create(adapter, ids, attrs)
+
+        # If the wtp-profile already exists on the target (i.e. there's
+        # another sibling RadioProfile in the target store with the same
+        # original_profile_name), this is a normal per-radio update.
+        # Otherwise, we need to aggregate siblings from the SOURCE side
+        # and create the whole wtp-profile at once.
+        existing_target_siblings = [
+            rp for rp in adapter.get_all(cls) if rp.original_profile_name == profile_name and rp.name != ids["name"]
+        ]
+
+        if existing_target_siblings:
+            # Parent exists — partial radio-N update.
+            radio_n = attrs.get("radio_index")
+            radio_payload = _radio_payload(attrs)
+            partial_update = {f"radio-{radio_n}": radio_payload}
+            adapter.client.cmdb.wireless_controller.wtp_profile.update(uid=profile_name, data=partial_update)
+            if adapter.job:
+                adapter.job.logger.info(f"  ~ added radio-{radio_n} to existing wtp-profile {profile_name!r}")
+            return super().create(adapter, ids, attrs)
+
+        # Parent doesn't exist — sibling aggregation.
+        source = getattr(adapter, "source_adapter", None)
+        if source is None:
+            if adapter.job:
+                adapter.job.logger.warning(
+                    f"Skipping RadioProfile {ids['name']!r}: wtp-profile {profile_name!r} "
+                    f"doesn't exist on FortiGate and source_adapter isn't accessible "
+                    f"for sibling aggregation. Create the wtp-profile on the FortiGate "
+                    f"UI first, then re-run push."
+                )
+            return super().create(adapter, ids, attrs)
+
+        sibling_source_rps = [rp for rp in source.get_all(cls) if rp.original_profile_name == profile_name]
+        if not sibling_source_rps:
+            return super().create(adapter, ids, attrs)
+
+        payload: dict[str, Any] = {
+            "name": profile_name,
+            # Default platform-mode for managed FortiAPs. Operators with
+            # different deployments (mesh, bridge, local-flex) should
+            # override on the FortiGate UI after create — the wtp-profile
+            # platform-mode isn't a RadioProfile attr since it lives on
+            # the container, not individual radios.
+            "platform-mode": "FortiAP-tunnel-mode",
+            "comment": f"Created from Nautobot via nautobot-ssot-fortinet sync ({len(sibling_source_rps)} radios)",
+        }
+        for sib in sibling_source_rps:
+            payload[f"radio-{sib.radio_index}"] = _radio_payload(
+                {
+                    "frequency": sib.frequency,
+                    "tx_power_min": sib.tx_power_min,
+                    "tx_power_max": sib.tx_power_max,
+                    "allowed_channel_list": sib.allowed_channel_list,
+                    "regulatory_domain": sib.regulatory_domain,
+                }
+            )
+
+        adapter.client.cmdb.wireless_controller.wtp_profile.create(data=payload)
         if adapter.job:
-            adapter.job.logger.warning(
-                f"Skipping create of RadioProfile {ids['name']!r}: wtp-profile "
-                f"creation isn't supported on push. Create the wtp-profile on "
-                f"the FortiGate first, then pull to populate Nautobot."
+            adapter.job.logger.info(
+                f"  + created wtp-profile {profile_name!r} on FortiGate ({len(sibling_source_rps)} radios)"
             )
         return super().create(adapter, ids, attrs)
 

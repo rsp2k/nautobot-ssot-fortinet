@@ -369,9 +369,7 @@ class FortiGatePolicyRule(PolicyRule):
         policyid = _parse_policyid(ids["name"])
         if policyid is None:
             if adapter.job:
-                adapter.job.logger.warning(
-                    f"Skipping create of {ids['name']!r}: can't parse policyid suffix"
-                )
+                adapter.job.logger.warning(f"Skipping create of {ids['name']!r}: can't parse policyid suffix")
             return super().create(adapter, ids, attrs)
 
         srcintf = attrs.get("source_interfaces") or ["any"]
@@ -408,8 +406,7 @@ class FortiGatePolicyRule(PolicyRule):
         adapter.client.cmdb.firewall.policy.create(data=payload)
         if adapter.job:
             adapter.job.logger.info(
-                f"  + created policy {policyid} on FortiGate "
-                f"({srcintf} → {dstintf}, action={payload['action']})"
+                f"  + created policy {policyid} on FortiGate ({srcintf} → {dstintf}, action={payload['action']})"
             )
         return super().create(adapter, ids, attrs)
 
@@ -561,9 +558,7 @@ class FortiGateNATPolicyRule(NATPolicyRule):
         mapped_addrs = attrs.get("translated_destination_addresses", [])
         if not (ext_addrs and mapped_addrs):
             if adapter.job:
-                adapter.job.logger.warning(
-                    f"Skipping VIP {vip_name!r} create: missing ext/mapped addresses"
-                )
+                adapter.job.logger.warning(f"Skipping VIP {vip_name!r} create: missing ext/mapped addresses")
             return super().create(adapter, ids, attrs)
 
         extip = _lookup_synth_addr_value(adapter, ext_addrs[0])
@@ -595,9 +590,7 @@ class FortiGateNATPolicyRule(NATPolicyRule):
 
         adapter.client.cmdb.firewall.vip.create(data=payload)
         if adapter.job:
-            adapter.job.logger.info(
-                f"  + created VIP {vip_name!r} on FortiGate ({extip} → {mappedip})"
-            )
+            adapter.job.logger.info(f"  + created VIP {vip_name!r} on FortiGate ({extip} → {mappedip})")
         return super().create(adapter, ids, attrs)
 
     def update(self, attrs: dict[str, Any]):
