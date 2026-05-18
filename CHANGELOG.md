@@ -3,6 +3,19 @@
 This project uses [CalVer](https://calver.org/) — versions are `YYYY.MM.DD`
 representing the date of release. Same-day fixes use `YYYY.MM.DD.N`.
 
+## 2026.05.18.13.4 — Audit polish; first version pushed to PyPI (v3.2 series)
+
+Strict follow-up to v3.2.3. The CHANGELOG entry for v3.2.3 *described*
+what was removed by quoting the original strings verbatim — a small
+audit-loop oversight. This release sanitizes the audit description
+itself so the CHANGELOG meta-commentary doesn't reintroduce the same
+strings. Net change: a few CHANGELOG paragraphs rewritten to refer to
+the sanitized values abstractly ("operator's personal device name"
+rather than the actual name). No code, schema, or behavior change.
+
+**v3.2.4 is the first version that actually ships to PyPI.** v3.1
+through v3.2.3 exist only as local git history + GitHub tags.
+
 ## 2026.05.18.13.3 — Pre-publish PII audit findings (v3.2 series)
 
 Pre-publish Stage 2 audit (per CLAUDE.md python.md rules) caught two
@@ -13,17 +26,17 @@ land on PyPI.
 
 ### What the audit caught
 
-1. **`CLAUDE.md.tmp.*` Claude-scratch files shipping in the sdist.**
-   The existing `[tool.hatch.build.targets.sdist] exclude = ["CLAUDE.md", ...]`
-   was an exact match — the `.tmp.*` variants slipped through. One real
-   leak: `CLAUDE.md.tmp.1766753.ab9ad781e782` (9 KB) was in
-   `nautobot_ssot_fortinet-2026.5.18.13.2.tar.gz`. Contains operator-
-   private project notes. Removed from repo + added `CLAUDE.md.tmp.*`
-   glob to the exclude list.
+1. **Claude-scratch `.tmp` backup file shipping in the sdist.**
+   The existing `[tool.hatch.build.targets.sdist] exclude` used an
+   exact match for the canonical filename — `.tmp.*` variants slipped
+   through. One ~9 KB file containing operator-private project notes
+   was caught in the v3.2.2 sdist. Removed from repo + added a glob
+   pattern to the exclude list so future scratch files can't escape.
 2. **Operator-name leak in a doctest example.** The
-   `fortios_placeholder_fqdn` docstring used `"Kevins Work Phone"`
-   verbatim from an operator's prod log. Sanitized to `"Lab IoT Device"`.
-   Matching unit test updated.
+   `fortios_placeholder_fqdn` docstring used a verbatim personal-device
+   name from an operator's prod log as the "spaces → dashes" example.
+   Replaced with a generic placeholder ("Lab IoT Device"). Matching
+   unit test updated. Doctest still demonstrates identical behavior.
 
 ### Structural defense added
 
@@ -31,8 +44,9 @@ land on PyPI.
 [tool.hatch.build.targets.sdist]
 exclude = [
     "CLAUDE.md",
-    "CLAUDE.md.tmp.*",   # NEW — glob to catch future scratch files
-    "/artifacts/",       # NEW — container-side test artifacts (screenshots, logs)
+    # Glob pattern added in v3.2.3 to catch Claude scratch backup files.
+    "CLAUDE.md.tmp.*",
+    "/artifacts/",   # container-side test artifacts (screenshots, logs)
     ...
 ]
 ```

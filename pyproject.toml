@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nautobot-ssot-fortinet"
-version = "2026.5.18.13.3"
+version = "2026.5.18.13.4"
 description = "Nautobot SSoT integration for Fortinet (FortiGate firewall + FortiAP wireless, bidirectional sync)."
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
