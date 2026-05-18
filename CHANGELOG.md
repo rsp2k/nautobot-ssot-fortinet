@@ -3,6 +3,120 @@
 This project uses [CalVer](https://calver.org/) — versions are `YYYY.MM.DD`
 representing the date of release. Same-day fixes use `YYYY.MM.DD.N`.
 
+## 2026.05.18.12 — VLAN sub-interfaces + Static Routes (v3.1)
+
+Builds on v3.0's Device + Interface sync with two big additive features:
+**operator-defined VLAN sub-interfaces** flow through the existing Devices
+Job, and **FortiOS static routes** become a first-class Django model in
+Nautobot with proper list/detail views.
+
+### New Django model: `FortinetStaticRoute`
+
+A dedicated model representing one FortiOS `router.static` entry. Lives
+alongside the existing app models with proper schema, filterset, forms,
+table, UI viewset, and navigation menu entry.
+
+| Field | Type | Notes |
+|---|---|---|
+| `device` | FK(`dcim.Device`) | CASCADE delete. The FortiGate this route lives on. |
+| `vdom` | CharField(32) | Default `"root"`. Routes are vdom-scoped. |
+| `seq_num` | PositiveIntegerField | FortiOS primary key per (device, vdom). |
+| `destination` | CharField(43) | CIDR string. Validated. |
+| `gateway` | GenericIPAddressField | Null for blackhole. |
+| `interface` | FK(`dcim.Interface`) | Null for blackhole/RIB-resolved. SET_NULL on delete. |
+| `distance` | PositiveSmallIntegerField | Default 10 (FortiOS default). |
+| `priority` | PositiveSmallIntegerField | Default 0. |
+| `blackhole` | BooleanField | If True, traffic is silently discarded. |
+| `comment` | CharField(255) | Operator-facing description. |
+
+Composite uniqueness: `(device, vdom, seq_num)`.
+
+URL: `/plugins/ssot-fortinet/static-routes/` — list, detail, add, edit,
+bulk-edit, and bulk-delete views all work out of the box from the
+NautobotUIViewSet pattern.
+
+### VLAN sub-interface sync
+
+Pre-v3.1 the Devices Job dropped every `type=vlan` interface. Now they
+flow through to Nautobot as `Interface(type='virtual')` with three new
+attrs:
+
+- `parent_interface` (FK) — resolved from FortiOS `interface` field
+- `untagged_vlan` (FK to `ipam.VLAN`) — auto-created if missing,
+  named `<device>-vlan<vid>`
+- `mode` — `"tagged"` for FortiOS VLAN sub-interfaces (the common case)
+
+Filtering policy: name-based skip continues for FortiOS-internal
+artifacts. The new helper `is_internal_fortios_interface()` rejects
+`wqtn.*` (VAP quarantine), `vap.*` (VAP-tagged switch ports), `ssl.*`
+(SSL-VPN root), and `naf.*` (FortiOS 7.4+ name-affinity artifacts).
+The type-map flip (`vlan` → `'virtual'` instead of `None`) AND the
+name filter ship in the same release — otherwise the first sync would
+explode the Interface count with quarantine records.
+
+### New Job form var: `include_static_routes`
+
+The existing `FortiGate → Nautobot (device + interfaces)` Job gains an
+opt-in `include_static_routes` BooleanVar, default **True**. Operators
+who don't want Nautobot managing route inventory can turn it off; the
+Job will skip the `router.static` pull entirely.
+
+### New helpers in `utils.fortios`
+
+- `is_internal_fortios_interface(name)` — name-prefix filter for
+  FortiOS-internal artifacts
+- `fortios_route_destination_cidr(raw)` — extracts CIDR from a
+  `router.static` record. Handles the dotted-mask form
+  (`"10.20.0.0 255.255.0.0"`) and the default route (`"0.0.0.0 0.0.0.0"`).
+  Returns `None` for the named-address-object form (`dstaddr` field) —
+  v3.1 deliberately doesn't resolve those, since the route would
+  introduce ordering dependencies between the firewall + device Jobs.
+  Caller logs and skips.
+
+### Tests
+
+- **231 unit tests** (was 202 in v3.0). +29 covering the new helpers,
+  VLAN extraction, route loading, and the route DiffSync skip logic.
+- All ruff lint + format clean.
+
+### Known limitations of v3.1
+
+- **Routes with `dstaddr` (named address object) are skipped on pull.**
+  We could resolve them by reading the AddressObject's `subnet` field
+  during the route load, but that introduces a hard ordering dependency
+  on the firewall Job — defer to a release that handles cross-Job
+  dependencies cleanly.
+- **Push direction for VLANs / routes is not in scope.** Pull-only,
+  same as v3.0. Wrong push to FortiOS routing can blackhole production
+  traffic; push requires pre-validation safeguards (separate release).
+- **VLAN sub-interface DELETE on Nautobot side cascades to the
+  auto-created `ipam.VLAN`** only if no other Interface references it.
+  This is Nautobot ORM behavior, not something we control.
+- **Static route push (Nautobot → FortiGate)** isn't wired up — there
+  is no `FortiGate.cmdb.router.static.create/update/delete` target
+  adapter yet. The route table model exists; the inverse Job will
+  follow in v3.2 once push-side validation is designed.
+
+### Upgrade from v2026.05.18.11 — SCHEMA MIGRATION REQUIRED
+
+```bash
+pip install --upgrade nautobot-ssot-fortinet
+nautobot-server migrate nautobot_ssot_fortinet  # NEW — creates FortinetStaticRoute table
+nautobot-server collectstatic --no-input
+sudo systemctl restart nautobot nautobot-worker
+```
+
+The `migrate` step is what's different from previous releases — this is
+the first release that adds DB-backed models to the app. Running the
+upgrade without `migrate` will leave the new "Static Routes" navigation
+entry broken (it links to a list view that depends on a table that
+doesn't exist yet).
+
+The existing Job (`FortiGate → Nautobot (device + interfaces)`) gains
+the `include_static_routes` form var. Default value is True, so existing
+saved Job runs will start pulling routes on next execution. To preserve
+v3.0 behavior (devices + interfaces only), uncheck the new form var.
+
 ## 2026.05.18.11 — Device + Interface sync (v3.0)
 
 The first new capability since the v2.x stability work. **The FortiGate

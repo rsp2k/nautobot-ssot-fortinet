@@ -25,6 +25,7 @@ _FAKE_MODULES = [
     "nautobot",
     "nautobot.apps",
     "nautobot.apps.jobs",
+    "nautobot.apps.models",
     "nautobot.dcim",
     "nautobot.dcim.models",
     "nautobot.extras",
@@ -43,6 +44,7 @@ _FAKE_MODULES = [
     "django.conf",
     "django.core",
     "django.core.exceptions",
+    "django.core.validators",
     "django.db",
     "django.db.models",
 ]

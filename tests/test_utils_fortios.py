@@ -590,3 +590,121 @@ class TestStripPullAnnotations:
         once = strip_pull_annotations("Allow web [srcintf=lan dstintf=wan1]")
         twice = strip_pull_annotations(once)
         assert once == twice
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v3.1 — VLAN sub-interface + static-route helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class TestIsInternalFortiosInterface:
+    """Internal name-prefix filter for FortiOS auto-generated artifacts."""
+
+    def test_quarantine_vlan(self):
+        from nautobot_ssot_fortinet.utils.fortios import is_internal_fortios_interface
+
+        assert is_internal_fortios_interface("wqtn.10.guest") is True
+
+    def test_vap_tagged_switch_port(self):
+        from nautobot_ssot_fortinet.utils.fortios import is_internal_fortios_interface
+
+        assert is_internal_fortios_interface("vap.10.corp") is True
+
+    def test_ssl_vpn_root(self):
+        from nautobot_ssot_fortinet.utils.fortios import is_internal_fortios_interface
+
+        assert is_internal_fortios_interface("ssl.root") is True
+
+    def test_naf_tunnel_artifact(self):
+        from nautobot_ssot_fortinet.utils.fortios import is_internal_fortios_interface
+
+        assert is_internal_fortios_interface("naf.affinity1") is True
+
+    def test_legitimate_operator_vlan_not_filtered(self):
+        from nautobot_ssot_fortinet.utils.fortios import is_internal_fortios_interface
+
+        assert is_internal_fortios_interface("vlan10") is False
+        assert is_internal_fortios_interface("vlan100") is False
+
+    def test_dotted_subinterface_name_not_filtered(self):
+        """A name like 'internal3.100' shouldn't match the vap. prefix even
+        though it contains a dot — startswith() not contains()."""
+        from nautobot_ssot_fortinet.utils.fortios import is_internal_fortios_interface
+
+        assert is_internal_fortios_interface("internal3.100") is False
+
+    def test_physical_port_not_filtered(self):
+        from nautobot_ssot_fortinet.utils.fortios import is_internal_fortios_interface
+
+        assert is_internal_fortios_interface("wan1") is False
+        assert is_internal_fortios_interface("internal3") is False
+
+    def test_empty_string_safe(self):
+        from nautobot_ssot_fortinet.utils.fortios import is_internal_fortios_interface
+
+        assert is_internal_fortios_interface("") is False
+
+
+class TestFortiosInterfaceTypeToNautobotVlanMapping:
+    """v3.1 changed the vlan-type mapping from None → 'virtual'."""
+
+    def test_vlan_now_maps_to_virtual(self):
+        from nautobot_ssot_fortinet.utils.fortios import fortios_interface_type_to_nautobot
+
+        assert fortios_interface_type_to_nautobot("vlan") == "virtual"
+
+    def test_existing_mappings_unchanged(self):
+        """Regression guard — the v3.0 mappings must not regress."""
+        from nautobot_ssot_fortinet.utils.fortios import fortios_interface_type_to_nautobot
+
+        assert fortios_interface_type_to_nautobot("physical") == "1000base-t"
+        assert fortios_interface_type_to_nautobot("aggregate") == "lag"
+        assert fortios_interface_type_to_nautobot("hard-switch") == "lag"
+        assert fortios_interface_type_to_nautobot("switch") == "lag"
+
+    def test_still_skipped_types(self):
+        from nautobot_ssot_fortinet.utils.fortios import fortios_interface_type_to_nautobot
+
+        assert fortios_interface_type_to_nautobot("vap-switch") is None
+        assert fortios_interface_type_to_nautobot("tunnel") is None
+
+    def test_unknown_type_returns_none(self):
+        from nautobot_ssot_fortinet.utils.fortios import fortios_interface_type_to_nautobot
+
+        assert fortios_interface_type_to_nautobot("totally-bogus-type") is None
+
+
+class TestFortiosRouteDestinationCidr:
+    """Pulling a CIDR out of router.static — handles both shapes."""
+
+    def test_dotted_mask_form(self):
+        from nautobot_ssot_fortinet.utils.fortios import fortios_route_destination_cidr
+
+        assert fortios_route_destination_cidr({"dst": "10.20.0.0 255.255.0.0"}) == "10.20.0.0/16"
+
+    def test_default_route(self):
+        from nautobot_ssot_fortinet.utils.fortios import fortios_route_destination_cidr
+
+        assert fortios_route_destination_cidr({"dst": "0.0.0.0 0.0.0.0"}) == "0.0.0.0/0"
+
+    def test_host_route(self):
+        from nautobot_ssot_fortinet.utils.fortios import fortios_route_destination_cidr
+
+        assert fortios_route_destination_cidr({"dst": "203.0.113.5 255.255.255.255"}) == "203.0.113.5/32"
+
+    def test_named_address_form_returns_none(self):
+        """v3.1 deliberately skips the named-address-object form — caller logs and skips."""
+        from nautobot_ssot_fortinet.utils.fortios import fortios_route_destination_cidr
+
+        assert fortios_route_destination_cidr({"dstaddr": [{"name": "DC_VLANS"}]}) is None
+
+    def test_empty_input_returns_none(self):
+        from nautobot_ssot_fortinet.utils.fortios import fortios_route_destination_cidr
+
+        assert fortios_route_destination_cidr({}) is None
+
+    def test_malformed_dst_returns_none(self):
+        """Bad dotted-mask input shouldn't crash — return None for the caller to skip."""
+        from nautobot_ssot_fortinet.utils.fortios import fortios_route_destination_cidr
+
+        assert fortios_route_destination_cidr({"dst": "nonsense"}) is None

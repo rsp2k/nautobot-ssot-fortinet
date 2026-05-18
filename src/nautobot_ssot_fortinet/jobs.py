@@ -677,6 +677,15 @@ class FortiGateDevicesDataSource(DataSource):
             "orphan records alone."
         ),
     )
+    include_static_routes = BooleanVar(
+        default=True,
+        description=(
+            "Pull FortiOS router.static entries into the FortinetStaticRoute "
+            "model added in v3.1. Default True. Disable if you don't want "
+            "Nautobot to manage routes for this FortiGate (e.g. you use a "
+            "different tool for route inventory)."
+        ),
+    )
 
     class Meta:
         """Job metadata."""
@@ -685,8 +694,9 @@ class FortiGateDevicesDataSource(DataSource):
         data_source = "FortiGate"
         description = (
             "Pull the FortiGate as a Nautobot Device with its physical, "
-            "hard-switch, switch, and aggregate interfaces (including IP "
-            "assignments). Read-only — push direction deferred to v3.1+."
+            "hard-switch, switch, aggregate, and VLAN sub-interfaces "
+            "(including IP assignments), plus its static routes (v3.1+). "
+            "Read-only — push direction deferred to v3.2+."
         )
 
     def run(self, *args, **kwargs):  # type: ignore[override]
@@ -698,10 +708,11 @@ class FortiGateDevicesDataSource(DataSource):
         self.location = kwargs["location"]
         self.status = kwargs["status"]
         self.delete_records_missing_from_source = kwargs["delete_records_missing_from_source"]
+        self.include_static_routes = kwargs.get("include_static_routes", True)
         super().run(*args, **kwargs)
 
     def load_source_adapter(self) -> None:
-        """Build the FortiGate adapter, load device + interface state."""
+        """Build the FortiGate adapter, load device + interface (+ optional route) state."""
         from nautobot_ssot_fortinet.diffsync.adapters.fortigate_devices import (
             FortiGateDevicesAdapter,
         )
@@ -716,13 +727,14 @@ class FortiGateDevicesDataSource(DataSource):
                 role_name=self.role.name,
                 location_name=self.location.name,
                 status_name=self.status.name,
+                include_static_routes=self.include_static_routes,
                 job=self,
                 sync=self.sync,
             )
             self.source_adapter.load()
 
     def load_target_adapter(self) -> None:
-        """Read existing Nautobot Device + Interface state for the target FortiGate."""
+        """Read existing Nautobot Device + Interface (+ optional Route) state."""
         from nautobot_ssot_fortinet.diffsync.adapters.nautobot_devices import (
             NautobotDevicesAdapter,
         )
@@ -734,6 +746,7 @@ class FortiGateDevicesDataSource(DataSource):
             role_name=self.role.name,
             location_name=self.location.name,
             status_name=self.status.name,
+            include_static_routes=self.include_static_routes,
             job=self,
             sync=self.sync,
         )

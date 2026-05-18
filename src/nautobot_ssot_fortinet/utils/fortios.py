@@ -598,8 +598,8 @@ def fortios_interface_ip_to_cidr(ip_field: str) -> str:
 def fortios_interface_type_to_nautobot(ftype: str) -> str | None:
     """Map FortiOS ``system.interface.type`` → Nautobot ``dcim.InterfaceType``.
 
-    Returns ``None`` for FortiOS types we deliberately skip in v3.0 (vap-switch,
-    tunnel, vlan) — callers should drop those records.
+    Returns ``None`` for FortiOS types we deliberately skip (vap-switch,
+    tunnel) — callers should drop those records.
 
     Nautobot ``InterfaceTypeChoices`` values used here:
 
@@ -609,7 +609,14 @@ def fortios_interface_type_to_nautobot(ftype: str) -> str | None:
       purposes. Could be refined per-DeviceType in a future release.
     - ``"lag"`` for aggregate / hardware-switch / soft-switch interfaces
       (anything that groups other interfaces logically).
-    - ``"virtual"`` for everything else that lands in Nautobot.
+    - ``"virtual"`` for VLAN sub-interfaces and other software interfaces
+      (v3.1+ surfaces these; pre-v3.1 they were skipped wholesale).
+
+    Quarantine VLANs (``wqtn.*``) and VAP-tagged interfaces (``vap.*``)
+    pass through this map as ``"virtual"`` but are filtered separately
+    by :func:`is_internal_fortios_interface` before any Nautobot writes.
+    That separation keeps the type mapping pure (one input → one output)
+    and the name-prefix policy explicit at the call site.
 
     >>> fortios_interface_type_to_nautobot("physical")
     '1000base-t'
@@ -617,6 +624,8 @@ def fortios_interface_type_to_nautobot(ftype: str) -> str | None:
     'lag'
     >>> fortios_interface_type_to_nautobot("hard-switch")
     'lag'
+    >>> fortios_interface_type_to_nautobot("vlan")
+    'virtual'
     >>> fortios_interface_type_to_nautobot("vap-switch")  # skipped — already synced as WirelessNetwork
 
     """
@@ -628,11 +637,94 @@ _FORTIOS_INTERFACE_TYPE_MAP = {
     "aggregate": "lag",
     "hard-switch": "lag",
     "switch": "lag",
-    # Skipped in v3.0 — return None so callers drop the record:
-    "vap-switch": None,  # already represented via WirelessNetwork sync
-    "vlan": None,  # mostly auto-created quarantine interfaces; defer
+    # v3.1+: operator-defined VLAN sub-interfaces map to Nautobot 'virtual'.
+    # Quarantine (wqtn.*) and VAP-tagged (vap.*) VLANs still need to be
+    # filtered by name via is_internal_fortios_interface() at the adapter.
+    "vlan": "virtual",
     "tunnel": None,  # VPN-specific; defer to VPN-focused release
+    "vap-switch": None,  # already represented via WirelessNetwork sync
 }
+
+
+# Name prefixes FortiOS auto-creates for internal use. These never represent
+# operator-meaningful network interfaces and should be filtered from the
+# Device + Interface sync regardless of their FortiOS ``type`` field.
+#
+# - ``wqtn.<vlanid>.<truncated-vap-name>`` — VAP quarantine interface; auto-
+#   created when a VAP is added. Documented FortiOS REST circular-dependency
+#   blocks REST-side delete (see v2.7 release notes).
+# - ``vap.<...>`` — VAP-tagged switch port; covered by the wireless sync.
+# - ``ssl.<...>`` — SSL-VPN tunnel root interface; not a configurable port.
+# - ``naf.<...>`` — Naming Affinity tunnel artifact (uncommon, FortiOS 7.4+).
+_INTERNAL_INTERFACE_PREFIXES: tuple[str, ...] = ("wqtn.", "vap.", "ssl.", "naf.")
+
+
+def is_internal_fortios_interface(name: str) -> bool:
+    """Return True if the interface name is a FortiOS-auto-generated artifact.
+
+    Used by the Device sync adapter to drop quarantine VLANs and other
+    internal interfaces *by name*, since their FortiOS ``type`` field can
+    be ``vlan`` (legitimate type for operator VLANs too) and we don't want
+    them appearing in Nautobot as orphan Interface records.
+
+    The list of prefixes is conservative and based on FortiOS 6.x/7.x
+    observed artifact names; adding a new prefix is a one-line change.
+
+    >>> is_internal_fortios_interface("wqtn.10.guest")
+    True
+    >>> is_internal_fortios_interface("vap.10.corp")
+    True
+    >>> is_internal_fortios_interface("ssl.root")
+    True
+    >>> is_internal_fortios_interface("vlan10")  # legitimate operator VLAN
+    False
+    >>> is_internal_fortios_interface("internal3.100")  # dot-form sub-interface
+    False
+    >>> is_internal_fortios_interface("wan1")
+    False
+    >>> is_internal_fortios_interface("")
+    False
+    """
+    return any(name.startswith(prefix) for prefix in _INTERNAL_INTERFACE_PREFIXES)
+
+
+def fortios_route_destination_cidr(raw: dict) -> str | None:
+    """Extract a CIDR destination from a FortiOS ``router.static`` record.
+
+    FortiOS stores route destinations in one of two shapes:
+
+    1. ``dst`` — dotted-mask ``"10.20.0.0 255.255.0.0"`` (the historical form,
+       still primary in 7.x for non-named routes). This is the SAME format
+       firewall.address uses — we reuse :func:`fortios_subnet_to_cidr` to
+       collapse it to network form.
+    2. ``dstaddr`` — list of named firewall.address references (e.g.
+       ``[{"name": "DC_VLANS"}]``). Used when operators define route
+       destinations as named address objects for reusability. We **don't
+       support** this form in v3.1 — would require resolving the address
+       object back to a CIDR mid-sync, which complicates the adapter and
+       introduces ordering dependencies between firewall + device Jobs.
+       Returns ``None`` so the caller can skip with a warning.
+
+    Returns ``"0.0.0.0/0"`` for the default route (FortiOS represents this
+    as ``"0.0.0.0 0.0.0.0"`` — :func:`fortios_subnet_to_cidr` handles it).
+
+    >>> fortios_route_destination_cidr({"dst": "10.20.0.0 255.255.0.0"})
+    '10.20.0.0/16'
+    >>> fortios_route_destination_cidr({"dst": "0.0.0.0 0.0.0.0"})
+    '0.0.0.0/0'
+    >>> fortios_route_destination_cidr({"dstaddr": [{"name": "DC_VLANS"}]})  # named-ref — skipped
+    >>> fortios_route_destination_cidr({})
+    """
+    dst = raw.get("dst", "")
+    if dst and dst.strip():
+        try:
+            return fortios_subnet_to_cidr(dst)
+        except ValueError:
+            return None
+    # Named-reference form — explicitly unsupported in v3.1; let caller log.
+    if raw.get("dstaddr"):
+        return None
+    return None
 
 
 def split_policy_members(
