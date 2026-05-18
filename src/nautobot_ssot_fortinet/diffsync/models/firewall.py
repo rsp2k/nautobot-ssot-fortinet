@@ -170,6 +170,8 @@ class PolicyRule(DiffSyncModel):
         "destination_address_groups",
         "destination_services",
         "destination_service_groups",
+        "source_interfaces",
+        "destination_interfaces",
         "vdom",
         "hostname",
         "description",
@@ -187,6 +189,12 @@ class PolicyRule(DiffSyncModel):
     destination_address_groups: list[str]
     destination_services: list[tuple[str, str, str]]
     destination_service_groups: list[str]
+    # FortiOS srcintf/dstintf can be either interface names ("lan", "wan1")
+    # or zone names — both are looked up the same way at policy-evaluation
+    # time. We store them as raw string lists so push can emit the FortiOS
+    # ``[{"name": "..."}]`` member format directly.
+    source_interfaces: list[str]
+    destination_interfaces: list[str]
     vdom: str
     hostname: str
     description: str = ""
@@ -241,6 +249,7 @@ class NATPolicyRule(DiffSyncModel):
         "translated_destination_addresses",
         "original_destination_services",
         "translated_destination_services",
+        "external_interface",
         "vdom",
         "hostname",
         "description",
@@ -255,6 +264,9 @@ class NATPolicyRule(DiffSyncModel):
     translated_destination_addresses: list[str]
     original_destination_services: list[tuple[str, str, str]]
     translated_destination_services: list[tuple[str, str, str]]
+    # FortiOS VIP `extintf` — the interface on which the external IP is
+    # reachable. Empty string for "any" (FortiOS default).
+    external_interface: str
     vdom: str
     hostname: str
     description: str = ""

@@ -14,6 +14,7 @@ from nautobot_ssot_fortinet.utils.fortios import (
     fortios_service_ports,
     fortios_subnet_to_cidr,
     mangle_name,
+    parse_intf_annotation,
     split_policy_members,
 )
 
@@ -419,3 +420,47 @@ class TestBuildFortiosServicePayload:
             parsed_proto, parsed_port = fortios_service_ports(payload)
             assert parsed_proto == ip_protocol, f"{ip_protocol!r} round-tripped to {parsed_proto!r}"
             assert parsed_port == port, f"port {port!r} round-tripped to {parsed_port!r}"
+
+
+class TestParseIntfAnnotation:
+    """v2.1+: reverse the [srcintf=X,Y dstintf=Z] description annotation."""
+
+    def test_single_srcintf(self):
+        assert parse_intf_annotation("Internal users [srcintf=lan dstintf=wan1]", "srcintf") == ["lan"]
+
+    def test_single_dstintf(self):
+        assert parse_intf_annotation("Internal users [srcintf=lan dstintf=wan1]", "dstintf") == ["wan1"]
+
+    def test_multi_value_comma_separated(self):
+        assert parse_intf_annotation("[srcintf=lan,vlan10,vlan20 dstintf=wan1]", "srcintf") == [
+            "lan",
+            "vlan10",
+            "vlan20",
+        ]
+
+    def test_extintf_for_nat(self):
+        # NAT/VIP uses [extintf=X]; same parser works.
+        assert parse_intf_annotation("[extintf=wan1] [portforward TCP 8080 -> 80]", "extintf") == ["wan1"]
+
+    def test_no_annotation_returns_empty_list(self):
+        assert parse_intf_annotation("just a free-text comment", "srcintf") == []
+
+    def test_empty_description(self):
+        assert parse_intf_annotation("", "srcintf") == []
+
+    def test_dash_placeholder_yields_dash_not_empty(self):
+        # When the pull side has no interfaces it emits "-" as a literal
+        # placeholder. parse_intf_annotation preserves that; the caller
+        # decides whether to treat "-" as a special value.
+        assert parse_intf_annotation("[srcintf=- dstintf=wan1]", "srcintf") == ["-"]
+
+    def test_annotation_at_end_of_string(self):
+        # The regex must handle annotation at the end (no trailing space).
+        assert parse_intf_annotation("a comment [srcintf=lan]", "srcintf") == ["lan"]
+
+    def test_round_trip_with_pull_side_format(self):
+        # Pull side emits exactly: [srcintf=A,B dstintf=C,D]
+        # The Nautobot side load should pull them back cleanly.
+        desc = "Allow web [srcintf=internal,vlan100 dstintf=wan1,wan2]"
+        assert parse_intf_annotation(desc, "srcintf") == ["internal", "vlan100"]
+        assert parse_intf_annotation(desc, "dstintf") == ["wan1", "wan2"]

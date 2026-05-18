@@ -25,7 +25,7 @@ from nautobot_ssot_fortinet.diffsync.models.nautobot_firewall import (
     NautobotServiceObject,
     NautobotServiceObjectGroup,
 )
-from nautobot_ssot_fortinet.utils.fortios import NAME_MANGLE_SEP
+from nautobot_ssot_fortinet.utils.fortios import NAME_MANGLE_SEP, parse_intf_annotation
 
 
 class NautobotFirewallAdapter(Adapter):
@@ -217,6 +217,13 @@ class NautobotFirewallAdapter(Adapter):
                 original_name = orm_rule.request_id or orm_rule.name
                 description = _strip_original_name_prefix(orm_rule.description or "", original_name)
 
+                # v2.1+: parse the [srcintf=...] / [dstintf=...] annotation
+                # back out of description into structured attrs. The
+                # description still carries the annotation for human
+                # readability in the Nautobot UI.
+                src_intfs = sorted(parse_intf_annotation(orm_rule.description or "", "srcintf"))
+                dst_intfs = sorted(parse_intf_annotation(orm_rule.description or "", "dstintf"))
+
                 self.add(
                     self.policy_rule(
                         name=orm_rule.name,
@@ -231,6 +238,8 @@ class NautobotFirewallAdapter(Adapter):
                         destination_address_groups=dst_grps,
                         destination_services=dst_svcs,
                         destination_service_groups=dst_svc_grps,
+                        source_interfaces=src_intfs,
+                        destination_interfaces=dst_intfs,
                         vdom=self.vdom,
                         hostname=self.hostname,
                         description=description,
@@ -259,6 +268,9 @@ class NautobotFirewallAdapter(Adapter):
                 )
                 original_name = orm_rule.request_id or orm_rule.name
                 description = _strip_original_name_prefix(orm_rule.description or "", original_name)
+                # v2.1+: parse [extintf=X] back out of description
+                extintf_list = parse_intf_annotation(orm_rule.description or "", "extintf")
+                external_interface = extintf_list[0] if extintf_list else ""
                 self.add(
                     self.nat_policy_rule(
                         name=orm_rule.name,
@@ -270,6 +282,7 @@ class NautobotFirewallAdapter(Adapter):
                         translated_destination_addresses=xlat_dst_addrs,
                         original_destination_services=orig_dst_svcs,
                         translated_destination_services=xlat_dst_svcs,
+                        external_interface=external_interface,
                         vdom=self.vdom,
                         hostname=self.hostname,
                         description=description,

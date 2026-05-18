@@ -272,12 +272,15 @@ class FortiGateFirewallAdapter(Adapter):
             action, action_note = fortios_action(raw.get("action", "deny"))
             log = raw.get("logtraffic", "disable") != "disable"
 
-            # Stitch description from comments + zone hints + action notes.
+            # Interface names are now structured DiffSync attrs (v2.1+) AND
+            # still embedded in description so humans see them in Nautobot UI.
+            # The Nautobot adapter's parse step recovers them cleanly on load.
+            srcintf = sorted(i.get("name") for i in raw.get("srcintf", []) if i.get("name"))
+            dstintf = sorted(i.get("name") for i in raw.get("dstintf", []) if i.get("name"))
+
             description_parts = []
             if raw.get("comments"):
                 description_parts.append(raw["comments"])
-            srcintf = [i.get("name") for i in raw.get("srcintf", []) if i.get("name")]
-            dstintf = [i.get("name") for i in raw.get("dstintf", []) if i.get("name")]
             if srcintf or dstintf:
                 description_parts.append(f"[srcintf={','.join(srcintf) or '-'} dstintf={','.join(dstintf) or '-'}]")
             if action_note:
@@ -298,6 +301,8 @@ class FortiGateFirewallAdapter(Adapter):
                     destination_address_groups=dst_grps,
                     destination_services=dst_svc_nks,
                     destination_service_groups=dst_svc_grp_names,
+                    source_interfaces=srcintf,
+                    destination_interfaces=dstintf,
                     vdom=self.vdom,
                     hostname=self.hostname,
                     description=description,
@@ -398,6 +403,7 @@ class FortiGateFirewallAdapter(Adapter):
                     translated_destination_addresses=[mapped_addr_name],
                     original_destination_services=sorted(orig_dst_svcs),
                     translated_destination_services=sorted(xlat_dst_svcs),
+                    external_interface=extintf,
                     vdom=self.vdom,
                     hostname=self.hostname,
                     description=description,

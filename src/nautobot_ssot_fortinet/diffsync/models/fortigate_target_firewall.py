@@ -4,7 +4,7 @@ The inverse of ``nautobot_firewall.py``: instead of writing to the
 Nautobot ORM, these write to the FortiGate REST API via the adapter's
 ``client`` attribute.
 
-**Scope (v2.0):**
+**Scope (v2.1):**
 
 - AddressObject — all 4 types (ipmask, fqdn, iprange, ipaddress), full CRUD
 - AddressObjectGroup — full CRUD; resolves members by un-mangled name
@@ -12,11 +12,14 @@ Nautobot ORM, these write to the FortiGate REST API via the adapter's
   (TCP/UDP/SCTP, ICMP, ICMP6, IP-numbered protocols)
 - ServiceObjectGroup — full CRUD; resolves members by composite NK
 - Policy — no-op container (FortiOS has no Policy concept)
-- PolicyRule — **UPDATE + DELETE only**. Create is v2.1 (needs
-  srcintf/dstintf which aren't stored as DiffSync attrs).
+- PolicyRule — **full CRUD** (v2.1). Create uses the structured
+  ``source_interfaces`` / ``destination_interfaces`` DiffSync attrs to
+  fill in FortiOS ``srcintf`` / ``dstintf``.
 - NATPolicy — no-op container
-- NATPolicyRule — **UPDATE + DELETE only** via VIP partial-update.
-  Create is v2.1 (full VIP reconstruction needs extintf).
+- NATPolicyRule — **full CRUD** (v2.1) via VIP reconstruction. Create
+  resolves the synthesized ``vip_*_ext`` / ``vip_*_mapped``
+  AddressObjects back to their IP values for FortiOS ``extip`` /
+  ``mappedip``; reads ``external_interface`` for ``extintf``.
 
 **Name un-mangling:** Nautobot stores names as
 ``<hostname>__<vdom>__<original>``; FortiOS needs the *original* name.
@@ -356,12 +359,57 @@ class FortiGatePolicyRule(PolicyRule):
 
     @classmethod
     def create(cls, adapter, ids: dict[str, Any], attrs: dict[str, Any]):
-        """No-op — PolicyRule create deferred to v2.1 (needs srcintf/dstintf scope)."""
+        """POST a new policy to FortiGate (v2.1+).
+
+        Uses the structured ``source_interfaces`` / ``destination_interfaces``
+        DiffSync attrs to fill in FortiOS's required ``srcintf`` / ``dstintf``.
+        If either is empty, falls back to a wildcard interface ``any``
+        which FortiOS accepts for "match all interfaces."
+        """
+        policyid = _parse_policyid(ids["name"])
+        if policyid is None:
+            if adapter.job:
+                adapter.job.logger.warning(
+                    f"Skipping create of {ids['name']!r}: can't parse policyid suffix"
+                )
+            return super().create(adapter, ids, attrs)
+
+        srcintf = attrs.get("source_interfaces") or ["any"]
+        dstintf = attrs.get("destination_interfaces") or ["any"]
+        payload = {
+            "policyid": policyid,
+            "name": attrs.get("original_name", "") or f"rule_{policyid}",
+            "action": NAUTOBOT_ACTION_TO_FORTIOS.get(attrs.get("action", "deny"), "deny"),
+            "status": "enable",
+            "logtraffic": "all" if attrs.get("log") else "disable",
+            "srcintf": [{"name": n} for n in srcintf],
+            "dstintf": [{"name": n} for n in dstintf],
+            "srcaddr": _addr_members(
+                attrs.get("source_addresses", []),
+                attrs.get("source_address_groups", []),
+                adapter.hostname,
+                adapter.vdom,
+            ),
+            "dstaddr": _addr_members(
+                attrs.get("destination_addresses", []),
+                attrs.get("destination_address_groups", []),
+                adapter.hostname,
+                adapter.vdom,
+            ),
+            "service": _svc_members(
+                attrs.get("destination_services", []),
+                attrs.get("destination_service_groups", []),
+                adapter.hostname,
+                adapter.vdom,
+            ),
+            "schedule": "always",
+            "comments": (attrs.get("description", "") or "")[:255],
+        }
+        adapter.client.cmdb.firewall.policy.create(data=payload)
         if adapter.job:
-            adapter.job.logger.warning(
-                f"Skipping create of PolicyRule {ids['name']!r}: requires "
-                f"srcintf/dstintf which aren't yet stored as DiffSync attrs. "
-                f"Create the policy on the FortiGate UI first, then pull."
+            adapter.job.logger.info(
+                f"  + created policy {policyid} on FortiGate "
+                f"({srcintf} → {dstintf}, action={payload['action']})"
             )
         return super().create(adapter, ids, attrs)
 
@@ -491,13 +539,64 @@ class FortiGateNATPolicyRule(NATPolicyRule):
 
     @classmethod
     def create(cls, adapter, ids: dict[str, Any], attrs: dict[str, Any]):
-        """No-op — NATPolicyRule create deferred to v2.1 (needs extintf scope)."""
+        """POST a new VIP to FortiGate (v2.1+).
+
+        Reconstructs a full ``firewall/vip`` payload from the DiffSync
+        attrs — uses ``external_interface`` for ``extintf`` (defaulting
+        to ``any``), resolves the synthesized ``vip_*_ext`` /
+        ``vip_*_mapped`` AddressObjects back to their IP values for the
+        FortiOS ``extip`` / ``mappedip`` fields.
+        """
+        # Recover the original FortiOS VIP name from the mangled suffix.
+        if "__nat_rule_" not in ids["name"]:
+            if adapter.job:
+                adapter.job.logger.warning(
+                    f"Skipping NATPolicyRule {ids['name']!r}: name doesn't follow "
+                    f"the expected '__nat_rule_<vipname>' convention"
+                )
+            return super().create(adapter, ids, attrs)
+        vip_name = ids["name"].rsplit("__nat_rule_", 1)[-1]
+
+        ext_addrs = attrs.get("original_destination_addresses", [])
+        mapped_addrs = attrs.get("translated_destination_addresses", [])
+        if not (ext_addrs and mapped_addrs):
+            if adapter.job:
+                adapter.job.logger.warning(
+                    f"Skipping VIP {vip_name!r} create: missing ext/mapped addresses"
+                )
+            return super().create(adapter, ids, attrs)
+
+        extip = _lookup_synth_addr_value(adapter, ext_addrs[0])
+        mappedip = _lookup_synth_addr_value(adapter, mapped_addrs[0])
+        if not (extip and mappedip):
+            if adapter.job:
+                adapter.job.logger.warning(
+                    f"Skipping VIP {vip_name!r}: couldn't resolve synthesized "
+                    f"AddressObject values (ext={extip}, mapped={mappedip})"
+                )
+            return super().create(adapter, ids, attrs)
+
+        payload: dict[str, Any] = {
+            "name": vip_name,
+            "extip": extip,
+            "extintf": attrs.get("external_interface") or "any",
+            "mappedip": [{"range": mappedip}],
+            "comment": (attrs.get("description", "") or "")[:255],
+        }
+
+        # Port-forward: read from translated_destination_services if set.
+        xlat_svcs = attrs.get("translated_destination_services", [])
+        orig_svcs = attrs.get("original_destination_services", [])
+        if xlat_svcs and orig_svcs:
+            payload["portforward"] = "enable"
+            payload["protocol"] = orig_svcs[0][0].lower()
+            payload["extport"] = orig_svcs[0][1]
+            payload["mappedport"] = xlat_svcs[0][1]
+
+        adapter.client.cmdb.firewall.vip.create(data=payload)
         if adapter.job:
-            adapter.job.logger.warning(
-                f"Skipping create of NATPolicyRule {ids['name']!r}: full VIP "
-                f"reconstruction requires extintf which isn't yet stored as a "
-                f"DiffSync attr. Create the VIP on the FortiGate UI first, "
-                f"then pull."
+            adapter.job.logger.info(
+                f"  + created VIP {vip_name!r} on FortiGate ({extip} → {mappedip})"
             )
         return super().create(adapter, ids, attrs)
 

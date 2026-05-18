@@ -3,6 +3,56 @@
 This project uses [CalVer](https://calver.org/) — versions are `YYYY.MM.DD`
 representing the date of release. Same-day fixes use `YYYY.MM.DD.N`.
 
+## 2026.05.18.2 — PolicyRule + NATPolicyRule CREATE (v2.1)
+
+Third release today. Removes the v2.0 deferral of CREATE for policies
+and NAT VIPs. All push directions are now full-CRUD except wtp-profile
+(which still needs multi-radio aggregation).
+
+### Added
+
+- **`PolicyRule.source_interfaces` + `destination_interfaces`** as
+  first-class structured DiffSync attrs. The pull side populates them
+  from FortiOS `srcintf` / `dstintf`; the Nautobot adapter parses them
+  back from the description's `[srcintf=lan dstintf=wan1]` annotation
+  on load. The description doubles as human-readable annotation AND
+  structured storage.
+- **`NATPolicyRule.external_interface`** as a first-class attr; same
+  pattern (parsed from `[extintf=wan1]`).
+- **`PolicyRule` CREATE** on push — uses the new interface attrs to fill
+  in FortiOS's required `srcintf`/`dstintf`. Falls back to `["any"]`
+  when an attr is empty (FortiOS accepts that as wildcard).
+- **`NATPolicyRule` CREATE** on push via full VIP reconstruction —
+  resolves the synthesized `vip_*_ext` / `vip_*_mapped` AddressObjects
+  back to their IP values for `extip` / `mappedip[].range`, populates
+  `extintf` from the structured attr, and optionally adds port-forward
+  from the translated services.
+- New `parse_intf_annotation()` helper in `utils.fortios` with 9 unit
+  tests covering the round-trip.
+
+### Workflow unlocked
+
+Operators can now author firewall policies and NAT VIPs **entirely in
+Nautobot** and push them to FortiGate from scratch:
+
+```
+   Nautobot UI: Create PolicyRule(source=A, dest=B, action=allow,
+                                  source_interfaces=[lan], ...)
+        ↓
+   Run "Nautobot → FortiGate (firewall)" Job (dry-run first!)
+        ↓
+   FortiGate has the new policy. Verify on FortiGate web UI.
+```
+
+Pre-v2.1 the workaround was "create the policy on the FortiGate UI
+first, then pull"; that's no longer needed.
+
+### Still deferred to v2.2
+
+- **wtp-profile create from a single RadioProfile** — requires
+  multi-radio + platform-mode aggregation that isn't expressible at
+  the per-radio DiffSync level.
+
 ## 2026.05.18.1 — Wireless push + policy/NAT push (UPDATE/DELETE)
 
 Same-day follow-up to v1.0 — extends the push direction across wireless,

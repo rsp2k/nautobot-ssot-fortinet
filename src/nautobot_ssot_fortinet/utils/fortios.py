@@ -164,6 +164,38 @@ def fortios_service_ports(svc: dict) -> tuple[str | None, str]:
     return proto or "TCP", ""
 
 
+def parse_intf_annotation(description: str, key: str) -> list[str]:
+    """Extract an ``[<key>=v1,v2,...]`` annotation back into a list of names.
+
+    The pull-side adapter emits descriptions with annotations like
+    ``[srcintf=lan dstintf=wan1]`` so humans see interface info in the
+    Nautobot UI. This helper reverses that for the push side — the
+    Nautobot adapter calls it during ``_load_policies()`` to populate
+    the structured ``source_interfaces`` / ``destination_interfaces`` /
+    ``external_interface`` DiffSync attrs.
+
+    >>> parse_intf_annotation("Internal users [srcintf=lan dstintf=wan1]", "srcintf")
+    ['lan']
+    >>> parse_intf_annotation("Internal users [srcintf=lan,vlan10 dstintf=wan1]", "srcintf")
+    ['lan', 'vlan10']
+    >>> parse_intf_annotation("Internal users [extintf=wan1]", "extintf")
+    ['wan1']
+    >>> parse_intf_annotation("just a comment", "srcintf")
+    []
+    >>> parse_intf_annotation("", "srcintf")
+    []
+    """
+    import re
+
+    # The key may be preceded by either `[` (first key in annotation) OR
+    # whitespace (second/third key in annotation). Both forms appear in
+    # the pull-side output: `[srcintf=lan dstintf=wan1]`.
+    match = re.search(rf"(?:[\[\s]){re.escape(key)}=([^\]\s]+)(?:\s|\])", description)
+    if not match:
+        return []
+    return [part for part in match.group(1).split(",") if part]
+
+
 def denormalize_port_separators(comma_form: str) -> str:
     """Inverse of :func:`_normalize_port_separators`: comma → space.
 
