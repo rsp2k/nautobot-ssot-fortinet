@@ -196,11 +196,143 @@ class FortiGateTargetInterface(FortiGateInterface):
         return self
 
 
-class FortiGateTargetStaticRoute(FortiGateStaticRoute):
-    """Read-only on the push side in v3.3 — route push deferred to v3.4+.
+MIN_PUSHABLE_SEQ_NUM = 1000
+"""Routes with seq_num below this threshold are considered operator-managed
+and refused by the push safety guard. FortiOS routes are typically numbered
+1-100 for manual config; reserving 1000+ for sync-managed routes prevents
+the push Job from overwriting an operator's hand-configured route. Operators
+who want Nautobot to manage a low-seq route can manually re-create it at
+seq>=1000."""
 
-    Route push has similar risk profile (wrong route blackholes traffic)
-    but the validation pattern is different from VLAN-interface push.
-    Splitting the two releases keeps the v3.3 review surface focused on
-    interface-only push semantics.
+
+def _is_pushable_route(attrs: dict[str, Any], seq_num: int) -> tuple[bool, str]:
+    """Whitelist check for static-route push (v3.4+). Returns (ok, reason).
+
+    Refuses:
+      * seq_num < MIN_PUSHABLE_SEQ_NUM (operator-managed territory)
+      * blackhole=True (operators must explicitly create blackholes via
+        FortiOS UI — they're usually intentional security policy and we
+        don't want the sync to silently apply them)
+      * empty/missing destination
+      * no gateway AND no interface (route would have nowhere to send)
     """
+    if seq_num < MIN_PUSHABLE_SEQ_NUM:
+        return False, (
+            f"refusing to push route seq={seq_num} (below MIN_PUSHABLE_SEQ_NUM={MIN_PUSHABLE_SEQ_NUM} — "
+            "this range is reserved for operator-managed routes)"
+        )
+    if attrs.get("blackhole"):
+        return False, (
+            "refusing to push blackhole route (operators must create blackhole routes "
+            "manually via FortiOS UI — they're typically intentional security policy)"
+        )
+    destination = attrs.get("destination", "")
+    if not destination:
+        return False, "refusing to push route with no destination"
+    if not attrs.get("gateway") and not attrs.get("interface_name"):
+        return False, "refusing to push route with no gateway AND no interface (route has nowhere to send traffic)"
+    return True, ""
+
+
+def _build_route_payload(seq_num: int, attrs: dict[str, Any]) -> dict:
+    """Build the FortiOS ``router/static`` POST/PUT payload from DiffSync attrs.
+
+    Always sets ``comment`` with the sync marker so operators can identify
+    Nautobot-managed routes at a glance.
+    """
+    import ipaddress
+
+    payload: dict[str, Any] = {
+        "seq-num": seq_num,
+        "distance": attrs.get("distance", 10),
+        "priority": attrs.get("priority", 0),
+    }
+    # Convert CIDR destination → FortiOS "addr mask" form
+    destination = attrs["destination"]
+    net = ipaddress.IPv4Network(destination, strict=False)
+    payload["dst"] = f"{net.network_address} {net.netmask}"
+
+    gateway = attrs.get("gateway") or ""
+    if gateway:
+        payload["gateway"] = gateway
+
+    interface_name = attrs.get("interface_name") or ""
+    if interface_name:
+        payload["device"] = interface_name
+
+    comment = attrs.get("comment", "") or ""
+    payload["comment"] = f"[Synced from Nautobot] {comment}".strip()
+    return payload
+
+
+class FortiGateTargetStaticRoute(FortiGateStaticRoute):
+    """Push static routes to FortiGate. Refuses operator-territory + blackhole routes."""
+
+    @classmethod
+    def create(cls, adapter, ids: dict[str, Any], attrs: dict[str, Any]):
+        """POST a new static route to FortiGate."""
+        seq_num = ids["seq_num"]
+        pushable, reason = _is_pushable_route(attrs, seq_num)
+        if not pushable:
+            if adapter.job:
+                adapter.job.logger.warning(f"Skipping push of route seq={seq_num}: {reason}")
+            return super().create(adapter, ids, attrs)
+        payload = _build_route_payload(seq_num, attrs)
+        check_fortios_response(
+            adapter.client.cmdb.router.static.create(data=payload),
+            label=f"router.static.create seq={seq_num}",
+        )
+        if adapter.job:
+            adapter.job.logger.info(
+                f"  + created route on FortiGate: seq={seq_num} {attrs['destination']} "
+                f"via {attrs.get('gateway') or '(intf)'}"
+            )
+        return super().create(adapter, ids, attrs)
+
+    def update(self, attrs: dict[str, Any]):
+        """PUT updated fields back to FortiGate. Full payload rebuild for safety."""
+        merged = {
+            "destination": attrs.get("destination", self.destination),
+            "gateway": attrs.get("gateway", self.gateway),
+            "interface_name": attrs.get("interface_name", self.interface_name),
+            "distance": attrs.get("distance", self.distance),
+            "priority": attrs.get("priority", self.priority),
+            "blackhole": attrs.get("blackhole", self.blackhole),
+            "comment": attrs.get("comment", self.comment),
+        }
+        pushable, reason = _is_pushable_route(merged, self.seq_num)
+        if not pushable:
+            if self.adapter.job:
+                self.adapter.job.logger.warning(f"Skipping push update of route seq={self.seq_num}: {reason}")
+            return super().update(attrs)
+        payload = _build_route_payload(self.seq_num, merged)
+        check_fortios_response(
+            self.adapter.client.cmdb.router.static.update(data=payload),
+            label=f"router.static.update seq={self.seq_num}",
+        )
+        if self.adapter.job:
+            self.adapter.job.logger.info(f"  ~ updated route on FortiGate: seq={self.seq_num}")
+        return super().update(attrs)
+
+    def delete(self):
+        """DELETE the static route from FortiGate. Refuses low-seq + blackhole routes."""
+        attrs = {
+            "destination": self.destination,
+            "gateway": self.gateway,
+            "interface_name": self.interface_name,
+            "blackhole": self.blackhole,
+        }
+        pushable, reason = _is_pushable_route(attrs, self.seq_num)
+        if not pushable:
+            msg = f"Refusing to delete route seq={self.seq_num}: {reason}"
+            if self.adapter.job:
+                self.adapter.job.logger.error(msg)
+            raise FortiOSAPIError(msg)
+        check_fortios_response(
+            self.adapter.client.cmdb.router.static.delete(uid=str(self.seq_num)),
+            label=f"router.static.delete seq={self.seq_num}",
+        )
+        if self.adapter.job:
+            self.adapter.job.logger.info(f"  - deleted route from FortiGate: seq={self.seq_num}")
+        super().delete()
+        return self

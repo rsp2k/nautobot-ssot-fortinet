@@ -3,6 +3,87 @@
 This project uses [CalVer](https://calver.org/) — versions are `YYYY.MM.DD`
 representing the date of release. Same-day fixes use `YYYY.MM.DD.N`.
 
+## 2026.05.19.1 — Static route PUSH (v3.4)
+
+Operators can now edit a ``FortinetStaticRoute`` record in Nautobot
+(destination, gateway, interface, distance, priority, comment) and
+push it to the FortiGate via the existing
+``Nautobot -> FortiGate (device interfaces + routes)`` Job. Combined
+with v3.3 VLAN push, this completes the push direction for the
+``dcim.Device``-anchored config the Devices Job manages.
+
+### What's new
+
+- ``FortiGateTargetStaticRoute`` CRUD model — POSTs/PUTs/DELETEs
+  via ``cmdb/router/static`` with hardcoded sync marker in comment.
+- New Job form var ``push_routes`` (default **False** — opt-in)
+  on the existing devices push Job. Routes are pulled regardless;
+  push is the opt-in.
+- Three safety boundaries (same defense-in-depth as v3.3):
+  - **``MIN_PUSHABLE_SEQ_NUM = 1000``** — refuses any route below
+    seq_num 1000. FortiOS routes are conventionally numbered 1-100
+    for manual operator config; reserving 1000+ for sync prevents
+    accidental overwrite of hand-configured routes.
+  - **Refuses blackhole-route push** — blackhole routes are usually
+    intentional security policy; operators must create them manually
+    via FortiOS UI. Sync won't silently apply or remove a blackhole.
+  - **Refuses no-gateway-AND-no-interface routes** — a route with
+    nothing to send to is malformed; refused before any REST call.
+
+### DELETE is intentional-error, not silent-skip
+
+If an operator somehow attempts to delete a low-seq or blackhole
+route via push, the safety guard raises ``FortiOSAPIError`` explicitly
+(not a silent no-op). The Job log shows a clear refusal message —
+operators can't misread silent-skip as success.
+
+### Live-validated end-to-end on dev FortiWiFi-61E
+
+```
+Before: route seq=9001, distance=10, comment="v3.1 sync test — leave in place"
+Edit in Nautobot ORM: distance=15, comment="v3.4 push test — edited in Nautobot"
+Run push Job with push_routes=True, dryrun=False
+After:  FortiGate route seq=9001, distance=15,
+        comment="[Synced from Nautobot] v3.4 push test — edited in Nautobot"
+```
+
+Job log: ``~ updated route on FortiGate: seq=9001  /  SUCCESS  /  0.41s``
+
+### Tests
+
+- **302 unit tests** (was 284 in v3.3). +18 covering:
+  - Whitelist accepts textbook route, refuses low-seq + blackhole +
+    no-destination + no-gateway-no-interface (regression guards)
+  - Payload builder: CIDR → dotted-mask conversion, sync marker in
+    comment, seq-num in payload, optional fields omitted when empty
+  - CRUD happy path: create invokes correct fortios endpoint with
+    correct payload
+  - **Sabotage tests**: low-seq create skipped (no REST call),
+    blackhole create skipped, low-seq DELETE raises FortiOSAPIError,
+    blackhole DELETE raises FortiOSAPIError
+
+### Backwards-compat note
+
+The existing VLAN-only push Job class is preserved — the new
+``push_routes`` form var defaults False. Operators upgrading from
+v3.3 will see the form gain a new checkbox but VLAN-push behavior
+is unchanged unless they check the new box.
+
+The Job display name in the Nautobot UI may briefly show
+"VLAN only" after upgrade — Nautobot caches Job names in the DB.
+Either restart the worker or run ``nautobot-server post_upgrade`` to
+pick up the new name "device interfaces + routes".
+
+### Upgrade
+
+```bash
+pip install --upgrade nautobot-ssot-fortinet  # = 2026.5.19.1
+sudo systemctl restart nautobot nautobot-worker
+```
+
+To enable route push: open the devices push Job in the SSoT
+dashboard, check ``push_routes``, dryrun first to inspect the diff.
+
 ## 2026.05.19.0 — VLAN sub-interface PUSH (v3.3) + 5-Job latent crash fix
 
 The first push-direction capability for device-level config. Operators

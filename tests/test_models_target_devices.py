@@ -18,8 +18,12 @@ from nautobot_ssot_fortinet.diffsync.adapters.fortigate_devices_target import (
     FortiGateDevicesTargetAdapter,
 )
 from nautobot_ssot_fortinet.diffsync.models.fortigate_target_devices import (
+    MIN_PUSHABLE_SEQ_NUM,
     FortiGateTargetInterface,
+    FortiGateTargetStaticRoute,
+    _build_route_payload,
     _build_vlan_payload,
+    _is_pushable_route,
     _is_pushable_vlan_interface,
 )
 from nautobot_ssot_fortinet.utils.fortios import FortiOSAPIError
@@ -251,3 +255,191 @@ class TestSabotagePhysicalInterfacePush:
         with pytest.raises(FortiOSAPIError, match="refusing to push"):
             instance.delete()
         target_adapter.client.cmdb.system.interface.delete.assert_not_called()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v3.4: Static route push — happy path + sabotage tests
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _full_route_attrs(**overrides):
+    """Default pushable route — destination 198.51.100.0/24 via wan2."""
+    base = {
+        "destination": "198.51.100.0/24",
+        "gateway": "192.168.1.1",
+        "interface_name": "wan2",
+        "distance": 10,
+        "priority": 0,
+        "blackhole": False,
+        "comment": "",
+    }
+    base.update(overrides)
+    return base
+
+
+@pytest.fixture
+def route_adapter():
+    """Adapter for route push tests with mocked router.static endpoint."""
+    from diffsync import Adapter
+
+    a = FortiGateDevicesTargetAdapter.__new__(FortiGateDevicesTargetAdapter)
+    Adapter.__init__(a)
+    a.client = MagicMock()
+    a.hostname = "fgt-test"
+    a.vdom = "root"
+    a.job = MagicMock()
+    response = MagicMock()
+    response.status_code = 200
+    a.client.cmdb.router.static.create.return_value = response
+    a.client.cmdb.router.static.update.return_value = response
+    a.client.cmdb.router.static.delete.return_value = response
+    return a
+
+
+class TestPushableRouteWhitelist:
+    """Whitelist that REFUSES operator-territory + blackhole routes."""
+
+    def test_accepts_textbook_route(self):
+        ok, reason = _is_pushable_route(_full_route_attrs(), seq_num=9001)
+        assert ok is True
+        assert reason == ""
+
+    def test_refuses_low_seq_route(self):
+        """seq < MIN_PUSHABLE_SEQ_NUM = operator-managed territory."""
+        for seq in (1, 5, 100, 999):
+            ok, reason = _is_pushable_route(_full_route_attrs(), seq_num=seq)
+            assert ok is False
+            assert "MIN_PUSHABLE_SEQ_NUM" in reason
+
+    def test_min_pushable_seq_constant(self):
+        """The threshold is documented and centralised."""
+        assert MIN_PUSHABLE_SEQ_NUM == 1000
+
+    def test_refuses_blackhole_route(self):
+        """Blackholes are usually intentional security policy — operators set manually."""
+        attrs = _full_route_attrs(blackhole=True)
+        ok, reason = _is_pushable_route(attrs, seq_num=9001)
+        assert ok is False
+        assert "blackhole" in reason
+
+    def test_refuses_no_destination(self):
+        attrs = _full_route_attrs(destination="")
+        ok, reason = _is_pushable_route(attrs, seq_num=9001)
+        assert ok is False
+        assert "destination" in reason
+
+    def test_refuses_no_gateway_and_no_interface(self):
+        """Route with no gateway AND no egress interface has nowhere to send traffic."""
+        attrs = _full_route_attrs(gateway="", interface_name="")
+        ok, reason = _is_pushable_route(attrs, seq_num=9001)
+        assert ok is False
+
+    def test_accepts_gateway_only(self):
+        """Routes with just a gateway (no interface) are valid — FortiOS resolves egress via RIB."""
+        attrs = _full_route_attrs(interface_name="")
+        ok, _ = _is_pushable_route(attrs, seq_num=9001)
+        assert ok is True
+
+    def test_accepts_interface_only(self):
+        """Routes with just an interface (no gateway) are valid for connected networks."""
+        attrs = _full_route_attrs(gateway="")
+        ok, _ = _is_pushable_route(attrs, seq_num=9001)
+        assert ok is True
+
+
+class TestRoutePayloadBuilder:
+    """FortiOS router.static payload generator — sync marker + dotted-mask conversion."""
+
+    def test_destination_converts_to_dotted_mask(self):
+        attrs = _full_route_attrs()
+        payload = _build_route_payload(9001, attrs)
+        assert payload["dst"] == "198.51.100.0 255.255.255.0"
+
+    def test_sync_marker_in_comment(self):
+        attrs = _full_route_attrs(comment="Operator notes")
+        payload = _build_route_payload(9001, attrs)
+        assert "[Synced from Nautobot]" in payload["comment"]
+        assert "Operator notes" in payload["comment"]
+
+    def test_seq_num_in_payload(self):
+        payload = _build_route_payload(9042, _full_route_attrs())
+        assert payload["seq-num"] == 9042
+
+    def test_default_route_cidr_converts(self):
+        attrs = _full_route_attrs(destination="0.0.0.0/0")
+        payload = _build_route_payload(9001, attrs)
+        assert payload["dst"] == "0.0.0.0 0.0.0.0"
+
+    def test_optional_fields_omitted_when_empty(self):
+        """gateway/device only present when populated — empty would set them empty on FortiOS."""
+        attrs = _full_route_attrs(interface_name="")
+        payload = _build_route_payload(9001, attrs)
+        assert "gateway" in payload
+        assert "device" not in payload
+
+
+class TestRoutePushCRUD:
+    def test_create_invokes_fortios_with_correct_payload(self, route_adapter):
+        ids = {"device_name": "fgt-test", "vdom": "root", "seq_num": 9001}
+        FortiGateTargetStaticRoute.create(route_adapter, ids, _full_route_attrs())
+        route_adapter.client.cmdb.router.static.create.assert_called_once()
+        payload = route_adapter.client.cmdb.router.static.create.call_args.kwargs["data"]
+        assert payload["seq-num"] == 9001
+        assert payload["dst"] == "198.51.100.0 255.255.255.0"
+        assert payload["gateway"] == "192.168.1.1"
+
+
+class TestSabotageRoutePush:
+    """**Critical safety regression guards for routes.**"""
+
+    def test_low_seq_create_skipped_no_rest_call(self, route_adapter):
+        """Sabotage: try to push a route in operator territory (seq < 1000)."""
+        ids = {"device_name": "fgt-test", "vdom": "root", "seq_num": 5}
+        FortiGateTargetStaticRoute.create(route_adapter, ids, _full_route_attrs())
+        route_adapter.client.cmdb.router.static.create.assert_not_called()
+        route_adapter.job.logger.warning.assert_called()
+
+    def test_blackhole_create_skipped(self, route_adapter):
+        """Sabotage: try to push a blackhole route via sync."""
+        ids = {"device_name": "fgt-test", "vdom": "root", "seq_num": 9001}
+        attrs = _full_route_attrs(blackhole=True)
+        FortiGateTargetStaticRoute.create(route_adapter, ids, attrs)
+        route_adapter.client.cmdb.router.static.create.assert_not_called()
+
+    def test_low_seq_delete_raises(self, route_adapter):
+        """Delete of a low-seq route MUST raise FortiOSAPIError (not silent skip)."""
+        instance = FortiGateTargetStaticRoute(
+            device_name="fgt-test",
+            vdom="root",
+            seq_num=42,  # operator territory
+            destination="10.0.0.0/8",
+            gateway="10.0.0.1",
+            interface_name="wan1",
+            distance=10,
+            priority=0,
+            blackhole=False,
+            comment="",
+        )
+        instance.adapter = route_adapter
+        with pytest.raises(FortiOSAPIError, match="MIN_PUSHABLE_SEQ_NUM"):
+            instance.delete()
+        route_adapter.client.cmdb.router.static.delete.assert_not_called()
+
+    def test_blackhole_delete_raises(self, route_adapter):
+        """Delete of a blackhole route MUST raise (don't silently remove security policy)."""
+        instance = FortiGateTargetStaticRoute(
+            device_name="fgt-test",
+            vdom="root",
+            seq_num=9001,
+            destination="192.0.2.0/24",
+            gateway="",
+            interface_name="",
+            distance=10,
+            priority=0,
+            blackhole=True,
+            comment="",
+        )
+        instance.adapter = route_adapter
+        with pytest.raises(FortiOSAPIError, match="blackhole"):
+            instance.delete()
+        route_adapter.client.cmdb.router.static.delete.assert_not_called()

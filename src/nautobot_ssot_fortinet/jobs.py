@@ -759,30 +759,35 @@ class FortiGateDevicesDataSource(DataSource):
 
 
 class FortiGateDevicesDataTarget(DataTarget):
-    """Push Nautobot VLAN sub-interfaces to FortiGate (v3.3+).
+    """Push Nautobot VLAN sub-interfaces (+ optionally static routes) to FortiGate (v3.3+, v3.4+).
 
     **HIGH-RISK CAPABILITY — READ THIS BEFORE ENABLING.**
 
-    Wrong writes to a FortiGate's interface table can disconnect the
-    appliance, misroute production traffic, or lock out administrators.
-    This Job is hardened to only push **VLAN sub-interfaces** — never
-    physical ports, hard-switches, aggregates, or management interfaces.
-    Even with the opt-in form var checked, the per-interface whitelist
-    in ``FortiGateTargetInterface`` will refuse non-VLAN pushes
-    BEFORE any REST call.
+    Wrong writes to a FortiGate's interface table or routing table can
+    disconnect the appliance, blackhole production traffic, or lock out
+    administrators. This Job is hardened to refuse anything outside its
+    narrow safety boundaries:
+
+    - **Interfaces (v3.3+):** only ``type='virtual'`` VLAN sub-interfaces
+      with ``parent_interface_name`` AND ``vlan_id`` in 1..4094. Physical/
+      hard-switch/aggregate/management interfaces are refused by the
+      safety guard BEFORE any REST call.
+    - **Routes (v3.4+, opt-in):** only routes with ``seq_num >= 1000``
+      and ``blackhole=False`` and at least one of ``gateway`` /
+      ``interface_name``. Low-seq routes are operator-managed territory;
+      blackholes are usually intentional security policy.
 
     Recommended first-run workflow:
 
     1. Run with ``dryrun=True`` (the default) — observe the diff.
-    2. Inspect the diff for any non-VLAN interface changes. If present,
-       check the warnings — those will be skipped by the safety guard.
+    2. Inspect the diff for any non-pushable changes. Those will be
+       skipped (interfaces) or refused (routes) by the safety guard.
     3. If the diff is clean, run with ``dryrun=False``.
-    4. Verify on the FortiGate via the web UI that the changes match
-       what you intended.
+    4. Verify on the FortiGate via web UI that changes match intent.
 
     Scope:
-      * VLAN sub-interface CREATE/UPDATE/DELETE
-      * Routes are read-only in v3.3 (push deferred to v3.4)
+      * VLAN sub-interface CREATE/UPDATE/DELETE (v3.3+)
+      * Static route CREATE/UPDATE/DELETE — opt-in via ``push_routes`` (v3.4+)
       * Device record is read-only (FortiGate IS the device identity)
     """
 
@@ -797,22 +802,33 @@ class FortiGateDevicesDataTarget(DataTarget):
     delete_records_missing_from_source = BooleanVar(
         default=False,
         description=(
-            "If True, delete FortiGate VLAN interfaces that no longer exist in Nautobot. "
-            "DANGEROUS — could remove production interfaces. Default False = additive/update only."
+            "If True, delete FortiGate VLAN interfaces (and routes if push_routes=True) "
+            "that no longer exist in Nautobot. DANGEROUS — could remove production "
+            "interfaces or routes. Default False = additive/update only."
+        ),
+    )
+    push_routes = BooleanVar(
+        default=False,
+        description=(
+            "v3.4+: also push static routes (with seq_num >= 1000) from "
+            "FortinetStaticRoute records. Off by default since wrong route push can "
+            "blackhole production traffic. Routes below seq_num 1000 and blackhole "
+            "routes are refused by the safety guard regardless of this flag."
         ),
     )
 
     class Meta:
         """Job metadata."""
 
-        name = "Nautobot -> FortiGate (device interfaces — VLAN only)"
+        name = "Nautobot -> FortiGate (device interfaces + routes)"
         data_source = "Nautobot"
         data_target = "FortiGate"
         description = (
-            "Push Nautobot VLAN sub-interfaces to a FortiGate. **HARDENED** — "
-            "only type=virtual interfaces with parent_interface + vlan_id 1..4094 are "
-            "pushed. Physical/aggregate/hard-switch/management interfaces are refused "
-            "by the safety guard. Always start with dryrun=True. See v3.3 release notes."
+            "Push Nautobot VLAN sub-interfaces (and optionally static routes) to a "
+            "FortiGate. **HARDENED** — only type=virtual interfaces with parent_interface "
+            "+ vlan_id 1..4094, and routes with seq_num>=1000 + non-blackhole, are pushed. "
+            "Everything else is refused by safety guards. Always start with dryrun=True. "
+            "See v3.3 + v3.4 release notes."
         )
 
     def run(self, *args, **kwargs):  # type: ignore[override]
@@ -820,6 +836,7 @@ class FortiGateDevicesDataTarget(DataTarget):
         self.external_integration = kwargs["external_integration"]
         self.vdom = kwargs["vdom"]
         self.delete_records_missing_from_source = kwargs["delete_records_missing_from_source"]
+        self.push_routes = kwargs.get("push_routes", False)
         super().run(*args, **kwargs)
 
     def load_source_adapter(self) -> None:
@@ -854,7 +871,7 @@ class FortiGateDevicesDataTarget(DataTarget):
             role_name=role_name,
             location_name=location_name,
             status_name=status_name,
-            include_static_routes=False,  # routes not in scope for v3.3 push
+            include_static_routes=self.push_routes,  # v3.4 opt-in
             job=self,
             sync=self.sync,
         )
@@ -887,13 +904,16 @@ class FortiGateDevicesDataTarget(DataTarget):
                 role_name=existing.role.name if existing.role else "",
                 location_name=existing.location.name if existing.location else "",
                 status_name=existing.status.name if existing.status else "Active",
-                include_static_routes=False,
+                include_static_routes=self.push_routes,  # v3.4 opt-in
                 job=self,
                 sync=self.sync,
             )
             self.target_adapter.load()
+        n_ifs = len(self.target_adapter.get_all("fortigate_interface"))
+        n_routes = len(self.target_adapter.get_all("fortigate_static_route")) if self.push_routes else 0
         self.logger.info(
-            f"Loaded current FortiGate state: {len(self.target_adapter.get_all('fortigate_interface'))} interfaces"
+            f"Loaded current FortiGate state: {n_ifs} interfaces"
+            + (f", {n_routes} static routes" if self.push_routes else "")
         )
 
     def execute_sync(self) -> None:
