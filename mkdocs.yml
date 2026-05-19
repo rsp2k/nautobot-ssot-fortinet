@@ -95,6 +95,7 @@ nav:
       - Troubleshooting: "admin/troubleshooting.md"
       - Release Notes:
           - "admin/release_notes/index.md"
+          - "v3.x summary (v3.0 → v3.4.1)": "admin/release_notes/v3.x-summary.md"
           - v2026.05.18.11: "admin/release_notes/version_2026.05.18.11.md"
           - v2026.05.18.10: "admin/release_notes/version_2026.05.18.10.md"
           - v2026.05.18.9: "admin/release_notes/version_2026.05.18.9.md"

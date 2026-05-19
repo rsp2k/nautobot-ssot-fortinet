@@ -3,6 +3,53 @@
 This project uses [CalVer](https://calver.org/) — versions are `YYYY.MM.DD`
 representing the date of release. Same-day fixes use `YYYY.MM.DD.N`.
 
+## 2026.05.19.3 — Docs catch-up for v3.x (v3.4.2)
+
+**No production code changes.** Every file under `src/` is byte-identical
+to v3.4.1. This release exists to close the gap between the shipped
+v3.x capabilities and what RTD/operators see in user-facing docs.
+
+### What changed
+
+- **New `docs/admin/release_notes/v3.x-summary.md`** — consolidated
+  capability arc covering v3.0 → v3.4.1 (Device sync, VLAN
+  sub-interfaces, Static Routes incl. push, FortiOS shape coverage).
+  Replaces what would have been 11 individual `version_*.md` pages for
+  v3.1/v3.2/v3.3/v3.4 plus the v3.2.1–.6 same-day hotfixes — that
+  per-tag detail lives in this CHANGELOG, which is the canonical record.
+- **`docs/admin/release_notes/index.md`** — adds the v3.x summary entry
+  at the top and references the CHANGELOG for per-tag detail.
+- **`mkdocs.yml`** — adds the v3.x summary to the Release Notes nav.
+- **`docs/user/app_getting_started.md`** — corrects "5 Jobs" → "7 Jobs";
+  adds Step 6 for Device + Interface sync (pre-create the DeviceType /
+  Role / Location / Status, run the new Job, browse Devices); expands
+  Step 8 (edit-and-push) with the three push directions (firewall,
+  wireless, device+interfaces); FortiOS-limitations callout updated
+  with the 15-char interface name truncation and the `allow-routing`
+  flag behavior.
+- **`docs/user/app_use_cases.md`** — corrects "four Jobs" → "seven
+  Jobs"; expands Use Case 3 to mention VLAN sub-interface push and
+  `FortinetStaticRoute` UI; adds **Use Case 4 "FortiGate as Nautobot
+  Device"** as a standalone v3.x flagship workflow; existing drift
+  detection becomes Use Case 5.
+
+### Why a release for docs-only
+
+Matches the pattern from v2.8 (`2026.05.18.8`) which was also docs +
+dev-stack with no production code changes. The release tag triggers
+the RTD auto-rebuild and gives operators a clean PyPI version to
+reference when they ask "which version's docs am I reading?"
+
+### Upgrade
+
+```bash
+pip install --upgrade nautobot-ssot-fortinet
+```
+
+No DB migrations, no Job changes, no config changes. RTD docs at
+https://nautobot-ssot-fortinet.readthedocs.io/ rebuild automatically
+from the new tag.
+
 ## 2026.05.19.2 — Module-import smoke-test framework (v3.4.1)
 
 Closes the test gap that allowed v3.2.1's ``NavMenuGroup`` bug class to

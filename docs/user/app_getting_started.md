@@ -49,9 +49,10 @@ sudo systemctl restart nautobot-worker
 
 ## Step 3 — Enable + run the firewall pull Job
 
-The integration registers five Jobs visible at **Apps → Single Source of
-Truth** (`/plugins/ssot/`) — two pull (data sources) and two push (data
-targets) plus a live-status diagnostic Job:
+The integration registers **seven Jobs** visible at **Apps → Single Source
+of Truth** (`/plugins/ssot/`) — three pull (data sources) for firewall /
+wireless / device-and-interfaces, three push (data targets) for the
+same three domains, plus a live-status diagnostic Job:
 
 ![SSoT dashboard showing all FortiGate sync Jobs](../assets/screenshots/ssot-dashboard.jpg)
 
@@ -88,39 +89,81 @@ If your FortiGate has wireless config:
 2. Run it with the same ExternalIntegration
 3. Browse `/wireless/wireless-networks/` to see synced SSIDs
 
-## Step 6 — Check who's on your wifi right now
+## Step 6 — Sync the FortiGate as a Device (v3.0+)
+
+To see your FortiGate appear in Nautobot's **Devices** list with its
+interfaces, IPs, VLAN sub-interfaces, and static routes:
+
+1. Pre-create the Nautobot scoping records (one-time setup):
+    - **Manufacturer**: `Fortinet`
+    - **DeviceType**: e.g. `FortiWiFi-61E`, `FortiGate-100F`
+    - **Role**: e.g. `Firewall`
+    - **Location**: wherever the FortiGate physically lives
+    - **Status**: typically `Active` (Nautobot ships this)
+2. Enable **"FortiGate → Nautobot (device + interfaces)"**
+3. Run with the same ExternalIntegration plus the new ObjectVars
+   (DeviceType / Role / Location / Status). Dryrun first.
+4. Browse `/dcim/devices/` to see the FortiGate as a real Device with
+   all its physical / aggregate / VLAN sub-interfaces
+
+The sync also covers static routes (`router.static`) — they appear at
+`/plugins/ssot-fortinet/static-routes/` (an app-owned UI, separate from
+Nautobot core which doesn't yet have a first-class Route model).
+
+## Step 7 — Check who's on your wifi right now
 
 Enable **"FortiGate Live Status"** and run it with the ExternalIntegration.
 The Job result page shows a table of connected wifi clients with their
 MAC, IP, hostname (joined from DHCP leases), SSID, and data rate. A JSON
 snapshot is attached for download.
 
-## Step 7 — Edit-and-push workflow (optional)
+## Step 8 — Edit-and-push workflow (optional)
 
-If you want Nautobot to drive FortiGate config:
+If you want Nautobot to drive FortiGate config, three push directions
+are available:
 
-1. In Nautobot UI, edit any synced object:
-    - **AddressObject** — change the prefix, description, or rename
-    - **PolicyRule** — toggle action, log, or change source/destination
-      addresses
-    - **NATPolicyRule** — edit the IP value of the synthesized
-      `vip_*_mapped` address to redirect a VIP (v2.6+)
-2. Enable **"Nautobot → FortiGate (firewall)"** (and/or wireless)
-3. Run with the same ExternalIntegration, **Dryrun checked first**
-4. Apply when the diff looks correct
-5. Verify on the FortiGate web UI that the change landed
+### Firewall push (v2.x)
 
-Every push CRUD path (create/update/delete) across AddressObject,
-AddressObjectGroup, ServiceObject, ServiceObjectGroup, PolicyRule, and
-NATPolicyRule has been live-validated end-to-end against a real
+Enable **"Nautobot → FortiGate (firewall)"**. Operators can edit
+AddressObjects, AddressObjectGroups, ServiceObjects, ServiceObjectGroups,
+PolicyRules, and NATPolicyRules — including the v2.6+ "edit the IP
+value on a `vip_*_mapped` synth address" workflow that propagates to
+the FortiGate VIP automatically.
+
+### Wireless push (v2.x)
+
+Enable **"Nautobot → FortiGate (wireless)"**. Create / update VAPs and
+RadioProfiles from Nautobot.
+
+### Device + interfaces push (v3.3+)
+
+Enable **"Nautobot → FortiGate (device + interfaces)"**. Author VLAN
+sub-interfaces and static routes in Nautobot's UI; push them to the
+FortiGate. Pre-validation guards against the most common mistakes
+(wrong-interface-parent, conflicting routes, etc.).
+
+### General push workflow
+
+1. Make your change in Nautobot's UI (or via REST / GraphQL)
+2. Run the appropriate push Job with **Dryrun checked first** — review
+   the diff
+3. Apply when the diff looks correct
+4. Verify on the FortiGate web UI that the change landed
+
+Every push CRUD path is live-validated end-to-end against a real
 FortiGate. See the e2e scripts in `development/scripts/e2e_push_*.py`
 for the exact validation patterns.
 
-!!! note "Known FortiOS REST limitation"
-    VAP (WirelessNetwork) **delete** via REST is blocked by a FortiOS
-    quirk — VAP creates a dependent quarantine interface, and neither
-    can be deleted while the other exists. Use the FortiGate web UI's
-    VAP delete wizard for VAP removal. Create and update work via push.
+!!! note "Known FortiOS REST limitations"
+    - **VAP delete** via REST is blocked by a FortiOS circular
+      quarantine-interface dependency. Use the FortiGate web UI's VAP
+      delete wizard. Create and update work via push.
+    - **Interface names** are silently truncated to 15 characters by
+      FortiOS. Keep VLAN sub-interface names ≤ 15 chars or push/pull
+      round-trips drift.
+    - **AddressObjects referenced by routes** need `allow-routing:
+      enable`. The v3.4+ push Job sets this automatically when an
+      AddressObject is the destination of a route.
 
 ## What to do when something looks wrong
 
