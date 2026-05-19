@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
+from diffsync.enum import DiffSyncFlags
 from nautobot.apps.jobs import BooleanVar, Job, ObjectVar, StringVar, register_jobs
 from nautobot.dcim.models import DeviceType, Location
 from nautobot.extras.models import ExternalIntegration, Role, Status
@@ -138,9 +139,13 @@ class FortiGateFirewallDataSource(DataSource):
     def execute_sync(self) -> None:
         """Run the sync — honoring the additive-only flag."""
         if not self.delete_records_missing_from_source:
-            # Strip "delete" actions from the diff before applying.
-            for top in self.target_adapter.top_level:
-                self.diff.remove_unprocessed_children(top, "-")
+            # v3.3.0 fix: previous code called `self.diff.remove_unprocessed_children`,
+            # a method that doesn't exist on modern diffsync.Diff (latent crash
+            # since v1.0 that only fired in non-trivial diffs against current
+            # diffsync). Use the supported flag instead: SKIP_UNMATCHED_DST
+            # tells the diff machinery to skip records present in dst (target)
+            # but absent from src (source) — i.e. don't delete.
+            self.diffsync_flags |= DiffSyncFlags.SKIP_UNMATCHED_DST
             self.logger.info("Additive-only mode: any Nautobot records absent from the FortiGate were NOT deleted.")
         super().execute_sync()
 
@@ -281,8 +286,8 @@ class FortiGateWirelessDataSource(DataSource):
     def execute_sync(self) -> None:
         """Run the sync — strip deletes from the diff if additive-only flag is set."""
         if not self.delete_records_missing_from_source:
-            for top in self.target_adapter.top_level:
-                self.diff.remove_unprocessed_children(top, "-")
+            # v3.3.0 fix: see FortiGateFirewallDataSource.execute_sync comment.
+            self.diffsync_flags |= DiffSyncFlags.SKIP_UNMATCHED_DST
             self.logger.info("Additive-only mode: any Nautobot records absent from the FortiGate were NOT deleted.")
         super().execute_sync()
 
@@ -516,8 +521,8 @@ class FortiGateFirewallDataTarget(DataTarget):
         we have one admin session for all create/update/delete REST calls.
         """
         if not self.delete_records_missing_from_source:
-            for top in self.target_adapter.top_level:
-                self.diff.remove_unprocessed_children(top, "-")
+            # v3.3.0 fix: see FortiGateFirewallDataSource.execute_sync comment.
+            self.diffsync_flags |= DiffSyncFlags.SKIP_UNMATCHED_DST
             self.logger.info("Additive-only mode: any FortiGate records absent from Nautobot were NOT deleted.")
 
         # v2.2+: expose the source adapter on the target so model.create()
@@ -608,8 +613,8 @@ class FortiGateWirelessDataTarget(DataTarget):
     def execute_sync(self) -> None:
         """Apply the diff with a re-opened client; strip deletes unless explicitly enabled."""
         if not self.delete_records_missing_from_source:
-            for top in self.target_adapter.top_level:
-                self.diff.remove_unprocessed_children(top, "-")
+            # v3.3.0 fix: see FortiGateFirewallDataSource.execute_sync comment.
+            self.diffsync_flags |= DiffSyncFlags.SKIP_UNMATCHED_DST
             self.logger.info("Additive-only mode: any FortiGate records absent from Nautobot were NOT deleted.")
         # v2.2+: expose the source adapter on the target so model.create()
         # methods can do sibling aggregation (used by wtp-profile create).
@@ -753,6 +758,158 @@ class FortiGateDevicesDataSource(DataSource):
         self.target_adapter.load()
 
 
+class FortiGateDevicesDataTarget(DataTarget):
+    """Push Nautobot VLAN sub-interfaces to FortiGate (v3.3+).
+
+    **HIGH-RISK CAPABILITY — READ THIS BEFORE ENABLING.**
+
+    Wrong writes to a FortiGate's interface table can disconnect the
+    appliance, misroute production traffic, or lock out administrators.
+    This Job is hardened to only push **VLAN sub-interfaces** — never
+    physical ports, hard-switches, aggregates, or management interfaces.
+    Even with the opt-in form var checked, the per-interface whitelist
+    in ``FortiGateTargetInterface`` will refuse non-VLAN pushes
+    BEFORE any REST call.
+
+    Recommended first-run workflow:
+
+    1. Run with ``dryrun=True`` (the default) — observe the diff.
+    2. Inspect the diff for any non-VLAN interface changes. If present,
+       check the warnings — those will be skipped by the safety guard.
+    3. If the diff is clean, run with ``dryrun=False``.
+    4. Verify on the FortiGate via the web UI that the changes match
+       what you intended.
+
+    Scope:
+      * VLAN sub-interface CREATE/UPDATE/DELETE
+      * Routes are read-only in v3.3 (push deferred to v3.4)
+      * Device record is read-only (FortiGate IS the device identity)
+    """
+
+    external_integration = ObjectVar(
+        model=ExternalIntegration,
+        description="FortiGate to push to. Must already be synced via the pull Job first.",
+    )
+    vdom = StringVar(
+        default="root",
+        description="FortiOS VDOM scope. Must match what the pull Job used.",
+    )
+    delete_records_missing_from_source = BooleanVar(
+        default=False,
+        description=(
+            "If True, delete FortiGate VLAN interfaces that no longer exist in Nautobot. "
+            "DANGEROUS — could remove production interfaces. Default False = additive/update only."
+        ),
+    )
+
+    class Meta:
+        """Job metadata."""
+
+        name = "Nautobot -> FortiGate (device interfaces — VLAN only)"
+        data_source = "Nautobot"
+        data_target = "FortiGate"
+        description = (
+            "Push Nautobot VLAN sub-interfaces to a FortiGate. **HARDENED** — "
+            "only type=virtual interfaces with parent_interface + vlan_id 1..4094 are "
+            "pushed. Physical/aggregate/hard-switch/management interfaces are refused "
+            "by the safety guard. Always start with dryrun=True. See v3.3 release notes."
+        )
+
+    def run(self, *args, **kwargs):  # type: ignore[override]
+        """Capture form kwargs as instance attrs, then run base sync (v2.9 pattern)."""
+        self.external_integration = kwargs["external_integration"]
+        self.vdom = kwargs["vdom"]
+        self.delete_records_missing_from_source = kwargs["delete_records_missing_from_source"]
+        super().run(*args, **kwargs)
+
+    def load_source_adapter(self) -> None:
+        """Load Nautobot view of the FortiGate's VLAN sub-interfaces (source = Nautobot)."""
+        # Form-var scoping values matter on the target/Nautobot side
+        # so the diff comparison's "fortigate_device" attrs line up.
+        # Read them off the existing Device record so we don't require
+        # the operator to re-enter them.
+        from nautobot.dcim.models import Device
+
+        from nautobot_ssot_fortinet.diffsync.adapters.nautobot_devices import (
+            NautobotDevicesAdapter,
+        )
+
+        try:
+            existing = Device.objects.get(name=self.external_integration.name)
+            device_type_model = existing.device_type.model
+            role_name = existing.role.name if existing.role else ""
+            location_name = existing.location.name if existing.location else ""
+            status_name = existing.status.name if existing.status else "Active"
+        except Device.DoesNotExist:
+            self.logger.error(
+                f"No Nautobot Device named {self.external_integration.name!r} exists. "
+                "Run the pull Job first to create the Device record before pushing interfaces."
+            )
+            raise
+
+        self.source_adapter = NautobotDevicesAdapter(
+            hostname=self.external_integration.name,
+            vdom=self.vdom,
+            device_type_model=device_type_model,
+            role_name=role_name,
+            location_name=location_name,
+            status_name=status_name,
+            include_static_routes=False,  # routes not in scope for v3.3 push
+            job=self,
+            sync=self.sync,
+        )
+        self.source_adapter.load()
+        self.logger.info(f"Loaded from Nautobot: {len(self.source_adapter.get_all('fortigate_interface'))} interfaces")
+
+    def load_target_adapter(self) -> None:
+        """Load CURRENT FortiGate state into the write-enabled target adapter.
+
+        Device scoping values (device_type / role / location / status) are
+        echoed onto the target adapter from the existing Nautobot Device
+        record so the ``fortigate_device`` diff is clean — no phantom
+        "update" for scoping fields the target adapter doesn't actually
+        push anyway.
+        """
+        from nautobot.dcim.models import Device
+
+        from nautobot_ssot_fortinet.diffsync.adapters.fortigate_devices_target import (
+            FortiGateDevicesTargetAdapter,
+        )
+
+        existing = Device.objects.get(name=self.external_integration.name)
+        self.logger.info(f"Connecting to FortiGate via ExternalIntegration {self.external_integration.name!r}...")
+        with build_client(self.external_integration) as client:
+            self.target_adapter = FortiGateDevicesTargetAdapter(
+                client=client,
+                hostname=self.external_integration.name,
+                vdom=self.vdom,
+                device_type_model=existing.device_type.model,
+                role_name=existing.role.name if existing.role else "",
+                location_name=existing.location.name if existing.location else "",
+                status_name=existing.status.name if existing.status else "Active",
+                include_static_routes=False,
+                job=self,
+                sync=self.sync,
+            )
+            self.target_adapter.load()
+        self.logger.info(
+            f"Loaded current FortiGate state: {len(self.target_adapter.get_all('fortigate_interface'))} interfaces"
+        )
+
+    def execute_sync(self) -> None:
+        """Apply the diff with a re-opened client; strip deletes unless explicitly enabled."""
+        if not self.delete_records_missing_from_source:
+            # v3.3.0 fix: see FortiGateFirewallDataSource.execute_sync comment.
+            self.diffsync_flags |= DiffSyncFlags.SKIP_UNMATCHED_DST
+            self.logger.info("Additive-only mode: any FortiGate interfaces absent from Nautobot were NOT deleted.")
+
+        self.target_adapter.source_adapter = self.source_adapter
+        # Re-open the client for the sync phase (the load() phase closed it).
+        with build_client(self.external_integration) as client:
+            self.target_adapter.client = client
+            super().execute_sync()
+
+
 jobs = [
     FortiGateFirewallDataSource,
     FortiGateWirelessDataSource,
@@ -760,5 +917,6 @@ jobs = [
     FortiGateFirewallDataTarget,
     FortiGateWirelessDataTarget,
     FortiGateDevicesDataSource,
+    FortiGateDevicesDataTarget,
 ]
 register_jobs(*jobs)

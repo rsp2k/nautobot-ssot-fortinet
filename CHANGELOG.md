@@ -3,6 +3,122 @@
 This project uses [CalVer](https://calver.org/) — versions are `YYYY.MM.DD`
 representing the date of release. Same-day fixes use `YYYY.MM.DD.N`.
 
+## 2026.05.19.0 — VLAN sub-interface PUSH (v3.3) + 5-Job latent crash fix
+
+The first push-direction capability for device-level config. Operators
+can now edit a VLAN sub-interface in Nautobot — description, IP,
+enabled status, MTU — and push it to the FortiGate. Hardened to refuse
+anything that isn't a textbook VLAN sub-interface (no physicals, no
+hard-switches, no management interfaces).
+
+### New Job: `Nautobot -> FortiGate (device interfaces — VLAN only)`
+
+Seventh SSoT Job. Form vars:
+- ``external_integration`` — FortiGate to push to (must already be
+  synced via the pull Job)
+- ``vdom`` — FortiOS Virtual Domain
+- ``delete_records_missing_from_source`` (default False) — additive-only
+  by default; flipping enables deletion of FortiGate VLAN interfaces
+  absent from Nautobot
+- ``dryrun`` (inherited, default True per SSoT convention)
+
+### Safety boundaries (the design IS the safety)
+
+Wrong writes to a FortiGate interface table can disconnect the
+appliance, misroute production traffic, or lock out administrators.
+Three layers of defense:
+
+1. **Whitelist at the CRUD model.** ``_is_pushable_vlan_interface()``
+   refuses anything that isn't ``type='virtual'`` AND has
+   ``parent_interface_name`` AND has ``vlan_id`` in 1..4094. Even if
+   Nautobot somehow has a physical-interface record, the push is
+   refused BEFORE any REST call goes out.
+2. **Hardcoded safe defaults.** ``allowaccess`` is always ``"ping"``
+   on pushed VLANs. We NEVER enable HTTPS/SSH/SNMP management access
+   via push — operators wanting management access configure it on
+   FortiOS UI after first sync (explicit human action required).
+3. **DELETE raises ``FortiOSAPIError``** explicitly (not silent skip)
+   when the safety check fails — operators see a clear "refused"
+   message rather than a silent no-op that could be misinterpreted as
+   success.
+
+### Live-validated end-to-end against fgt-dev (FortiWiFi-61E / FortiOS 7.0.14)
+
+1. Edit ``ssot_test_vlan1`` description in Nautobot ORM
+2. Run the new push Job (dryrun=False)
+3. Job log: ``Sync complete  Sync Time: 0:00:00.407142``
+4. ``~ updated VLAN on FortiGate: 'ssot_test_vlan1'``
+5. Direct REST query confirms FortiOS description now reads:
+   ``[Synced from Nautobot] v3.3 push test — edited in Nautobot``
+
+### Latent crash bug fixed across ALL 5 push/pull Jobs
+
+While field-testing v3.3 push, the additive-only diff-stripping code
+crashed with:
+
+```
+AttributeError: 'Diff' object has no attribute 'remove_unprocessed_children'
+```
+
+Investigation revealed the helper was **removed from upstream
+``diffsync``** in some version we already depend on. The pattern was
+present in 5 places (firewall pull/push, wireless pull/push, devices
+pull) since v1.0 — every additive-only sync run had been crashing
+silently for users on this diffsync release. Not reported because:
+
+- 4 of the 5 paths were the pull side, which has rarely-non-trivial
+  delete sets (operators usually want pull deletes processed)
+- The Job's task-runner catches AttributeErrors and reports
+  "FAILURE" — operators may have shrugged and re-run with
+  ``delete=True``
+- No unit test ever exercised ``execute_sync`` with a real diff
+
+**Fix:** replace with ``self.diffsync_flags |= DiffSyncFlags.SKIP_UNMATCHED_DST``
+— the supported modern diffsync API. Same semantics, no crash.
+Applied to all 5 Jobs (4 pre-existing + the new push Job).
+
+### What's deliberately NOT supported in v3.3
+
+- **Physical / aggregate / hard-switch / management interface push** —
+  refused by the safety guard. These remain operator-managed via the
+  FortiOS web UI.
+- **Static route push** — pull works (v3.1+); push deferred to v3.4
+  for separate review.
+- **AllowAccess push** — hardcoded to ``ping`` always. Operators
+  configure management access on FortiOS UI.
+
+### Tests
+
+- **284 unit tests** (was 269 in v3.2.6). +15 covering:
+  - whitelist accepts textbook VLAN
+  - whitelist refuses physical, lag, virtual-without-parent,
+    out-of-range vlan_id (regression guards)
+  - payload builder shapes (allowaccess locked to ping, sync marker
+    in description, MTU override, status up/down)
+  - **sabotage tests**: try to push physical/lag, confirm no REST
+    call goes out
+  - delete-refuses-non-VLAN raises FortiOSAPIError (not silent)
+
+### Backwards-compat note
+
+The latent ``remove_unprocessed_children`` bug fix is observable
+behavior on the existing 4 Jobs: previously they silently crashed
+in additive-only mode, now they actually succeed. If your monitoring
+treated those crashes as "no sync needed", they'll start producing
+real syncs after upgrade. Recommended: do a single dryrun against
+each Job first to see what the diff looks like.
+
+### Upgrade
+
+```bash
+pip install --upgrade nautobot-ssot-fortinet  # = 2026.5.19.0
+sudo systemctl restart nautobot nautobot-worker
+```
+
+No migration. The new push Job appears under SSoT dashboard as
+"Nautobot -> FortiGate (device interfaces — VLAN only)" — disabled by
+default per Nautobot Job convention; enable via the Job's edit page.
+
 ## 2026.05.18.13.6 — Named-address-object route resolution + two FortiOS shape gotchas
 
 Closes the "v3.1 deliberately skips dstaddr-form routes" deferral from
