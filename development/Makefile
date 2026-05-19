@@ -108,6 +108,15 @@ e2e-push-all: e2e-push-address e2e-push-addrgrp e2e-push-service e2e-push-svcgrp
 e2e-jobs-lifecycle:
 	$(DC) exec $(WEB) nautobot-server shell_plus --quiet-load --command "exec(open('/opt/nautobot/jobs/dev_scripts/e2e_jobs_lifecycle.py').read()); run()"
 
+# Module-import + Job-instantiation smoke test (v3.4.1+) — closes the test
+# gap that allowed v3.2.1's "All groups defined in a tab must be an instance
+# of NavMenuGroup" bug. Exercises real Nautobot import-time + constructor-
+# time validation against every navigation/views/urls/forms/filters/tables/
+# jobs/models module in this app. Non-zero exit on any failure — safe to
+# wire into CI.
+smoke-test:
+	$(DC) exec $(WEB) nautobot-server shell_plus --quiet-load --command "exec(open('/opt/nautobot/jobs/dev_scripts/e2e_smoke_test.py').read()); run()"
+
 check-navs:
 	$(DC) exec $(WEB) nautobot-server shell_plus --quiet-load -c "\
 from django.apps import apps; \

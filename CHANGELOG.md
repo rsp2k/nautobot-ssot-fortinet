@@ -3,6 +3,84 @@
 This project uses [CalVer](https://calver.org/) — versions are `YYYY.MM.DD`
 representing the date of release. Same-day fixes use `YYYY.MM.DD.N`.
 
+## 2026.05.19.2 — Module-import smoke-test framework (v3.4.1)
+
+Closes the test gap that allowed v3.2.1's ``NavMenuGroup`` bug class to
+ship. The unit-test ``conftest.py`` stubs ``nautobot.apps.*`` with
+``MagicMock`` (intentional, keeps unit tests fast and Nautobot-free),
+which means import-time + constructor-time validation NEVER fires
+there. v3.4.1 adds an integration smoke test that runs inside the dev
+container with REAL Nautobot and exercises:
+
+1. **Bare module imports** — navigation/views/urls/forms/filters/
+   tables/jobs/models. Catches type-error-on-construction class bugs.
+2. **Job class instantiation** — every registered Job class can be
+   constructed (v2.8 regression guard).
+3. **Navigation structure** — ``NavMenuTab.groups`` entries are real
+   ``NavMenuGroup`` instances, not bare dicts (v3.2.1 regression guard).
+4. **Django model + UI ViewSet wiring** — queryset evaluates, filterset
+   binds, form/table Meta.model set.
+5. **URL routing** — ``reverse()`` resolves the list + add URL names.
+
+### Run it
+
+```bash
+make -C development smoke-test
+```
+
+Non-zero exit on any failure. Safe to wire into CI.
+
+### Sabotage-validated
+
+Per the project's regression-guard discipline (v2.10 pattern):
+temporarily reintroduced the exact v3.2.1 bad shape
+(``NavMenuTab(groups=({"name": ...},))``), ran ``make smoke-test``,
+confirmed the failure:
+
+```
+TypeError: All groups defined in a tab must be an instance of NavMenuGroup
+make: *** [Makefile:118: smoke-test] Error 1
+```
+
+Same error message, same line, non-zero exit. Restored the file,
+re-ran, smoke test passed. If anyone reintroduces the v3.2.1 bug
+class — bare dict, wrong descriptor type, missing field — the next
+``make smoke-test`` will catch it before it reaches production.
+
+### Files added
+
+- ``development/scripts/e2e_smoke_test.py`` — the smoke test itself
+  (~80 lines, exits 0/1 on pass/fail)
+- ``development/Makefile`` ``smoke-test`` target
+
+No production code change. No tests changed (302 unit tests still
+passing). Pure new validation surface.
+
+### Lesson from the v3.0 → v3.4 series
+
+Six release iterations surfaced four distinct bug classes that unit
+tests couldn't catch because the test fixture stubs Nautobot:
+
+| Version | Bug class | Caught by |
+|---|---|---|
+| v2.8 | Form-var descriptors not captured in ``run()`` | Operator UI run |
+| v3.2.1 | ``NavMenuTab(groups=({"name": ...},))`` bare dict | Dev container startup |
+| v3.2.2 | ``bool("disable") == True`` blackhole misclassification | Live hardware run |
+| v3.2.5 | ``get_result()`` strips envelope; ``dict(list)`` crashes | Live hardware run |
+
+The new smoke test would have caught v2.8 + v3.2.1 (the two
+import/instantiation-time bugs) before they shipped to PyPI. v3.2.2
+and v3.2.5 need live hardware to surface — beyond smoke-test scope.
+
+### Upgrade
+
+```bash
+pip install --upgrade nautobot-ssot-fortinet  # = 2026.5.19.2
+```
+
+No production change. Operators don't need to do anything — this
+release adds a developer testing tool that runs in the dev container.
+
 ## 2026.05.19.1 — Static route PUSH (v3.4)
 
 Operators can now edit a ``FortinetStaticRoute`` record in Nautobot
